@@ -236,6 +236,31 @@ def verify_user(username: str, password: str) -> bool:
     return hmac.compare_digest(_hash_password(password, salt), pw_hash)
 
 
+def verify_master_credentials(username: str, password: str) -> bool:
+    """Cek kredensial admin dari Streamlit Secrets (APP_USERNAME / APP_PASSWORD),
+    kalau keduanya di-set. Berguna untuk akses cepat tanpa perlu setup database."""
+    try:
+        import streamlit as st
+        app_user = st.secrets.get("APP_USERNAME")
+        app_pass = st.secrets.get("APP_PASSWORD")
+    except Exception:
+        app_user = os.environ.get("APP_USERNAME")
+        app_pass = os.environ.get("APP_PASSWORD")
+    if not app_user or not app_pass:
+        return False
+    return hmac.compare_digest(username, app_user) and hmac.compare_digest(password, app_pass)
+
+
+def verify_credentials(username: str, password: str) -> bool:
+    """Cek kredensial: prioritas akun master di Secrets, lalu akun di database."""
+    if verify_master_credentials(username, password):
+        return True
+    try:
+        return verify_user(username, password)
+    except Exception:
+        return False
+
+
 def list_users() -> list[dict]:
     conn, _ = get_connection()
     cur = conn.cursor()

@@ -41,12 +41,20 @@ dengan fallback SQLite — tidak ada error yang menghentikan aplikasi.
 Untuk deploy di **Streamlit Community Cloud**, isi secret yang sama lewat
 **App settings → Secrets** di dashboard Streamlit Cloud (bukan file lokal).
 
-### Login & Log Aktivitas
+### Login, Gating Akses & Log Aktivitas
 
-- Menu **👤 Login User** di sidebar: daftar akun baru atau login dengan akun yang ada.
-- Tanpa login, aksi tercatat sebagai user **Guest**.
-- Menu **⚙️ Setting** menampilkan status koneksi database, daftar pengguna terdaftar,
-  dan log aktivitas terakhir (siapa mengubah apa, kapan).
+- **Semua halaman terkunci kecuali Login** — sebelum login, sidebar otomatis
+  mengarahkan ke menu **👤 Login User**; menu **Setting** dan **Capacity & Renewal**
+  baru bisa diakses setelah login berhasil.
+- **Dua sumber kredensial**, keduanya bisa dipakai bersamaan:
+  1. **Akun master via Secrets** — isi `APP_USERNAME` dan `APP_PASSWORD` di
+     `.streamlit/secrets.toml` (lihat `.streamlit/secrets.toml.example`) untuk
+     login cepat tanpa setup database.
+  2. **Akun database** — daftar akun baru lewat tab "Daftar Akun Baru" di
+     halaman Login, tersimpan di Supabase/SQLite (password di-hash, bukan
+     disimpan plain text).
+- Menu **⚙️ Setting** menampilkan status koneksi database, daftar pengguna
+  terdaftar di database, dan log aktivitas terakhir (siapa mengubah apa, kapan).
 
 ## Cara Run Lokal
 

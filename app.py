@@ -238,9 +238,14 @@ else:
 PAGE = st.sidebar.radio(
     "Navigasi",
     ["⚙️ Setting", "📊 Capacity & Renewal", "👤 Login User"],
-    index=1,
+    index=1 if st.session_state["logged_in"] else 2,
     label_visibility="collapsed",
 )
+
+if not st.session_state["logged_in"] and PAGE != "👤 Login User":
+    st.sidebar.warning("🔒 Silakan login terlebih dahulu.")
+    PAGE = "👤 Login User"
+
 st.sidebar.markdown("---")
 try:
     st.sidebar.caption(f"Backend DB: **{db.get_backend_label()}**")
@@ -266,7 +271,7 @@ def render_login_page():
             p = st.text_input("Password", type="password")
             if st.form_submit_button("Login", type="primary"):
                 try:
-                    ok = db.verify_user(u.strip(), p)
+                    ok = db.verify_credentials(u.strip(), p)
                 except Exception as e:
                     ok = False
                     st.error(f"Gagal terhubung ke database: {e}")
