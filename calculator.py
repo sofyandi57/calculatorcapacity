@@ -617,3 +617,77 @@ def aggregate_platform(
         "status_storage": status_global(util_storage),
         "status_network": status_global(util_network),
     }
+
+
+def aggregate_platform_breakdown(
+    platform_name: str,
+    existing: Dict[str, float],
+    infra_utama_rows: List[Dict[str, Any]],
+    pendukung_rows: List[Dict[str, Any]],
+    storage_rows: List[Dict[str, Any]],
+    network_final_mbps: float,
+) -> Dict[str, Any]:
+    """Breakdown 'Total FINAL Required' per kategori (format A/B/C):
+    A. Infra Utama - Kategori Utama, Infra Utama - Kategori Pendukung,
+       Infra Pendukung (sheet tersendiri), Storage Capacity (sheet tersendiri),
+       lalu Total Keseluruhan.
+    B. Kapasitas Existing (isi manual).
+    C. Analisis Gap & Utilization (pakai aggregate_platform()).
+    """
+    utama_calc = [r if "final_cpu" in r else calc_infra_utama_row(r) for r in infra_utama_rows]
+    pendukung_calc = [r if "final_cpu" in r else calc_pendukung_row(r) for r in pendukung_rows]
+    storage_calc = [r if "final_storage_gb" in r else calc_storage_row(r) for r in storage_rows]
+
+    cat_utama = {
+        "kategori": "Infra Utama - Kategori Utama (DB/Engine)",
+        "cpu": sum(r["final_cpu"] for r in utama_calc),
+        "mem": sum(r["final_mem"] for r in utama_calc),
+        "storage": 0.0,
+        "network": 0.0,
+    }
+    cat_pendukung = {
+        "kategori": "Infra Utama - Kategori Pendukung",
+        "cpu": sum(r["final_cpu"] for r in pendukung_calc),
+        "mem": sum(r["final_mem"] for r in pendukung_calc),
+        "storage": sum(r["final_storage"] for r in pendukung_calc),
+        "network": 0.0,
+    }
+    cat_storage = {
+        "kategori": "Storage Capacity (sheet tersendiri)",
+        "cpu": 0.0,
+        "mem": 0.0,
+        "storage": sum(r["final_storage_gb"] for r in storage_calc),
+        "network": 0.0,
+    }
+    cat_network = {
+        "kategori": "Network",
+        "cpu": 0.0,
+        "mem": 0.0,
+        "storage": 0.0,
+        "network": network_final_mbps,
+    }
+    categories = [cat_utama, cat_pendukung, cat_storage, cat_network]
+    total_row = {
+        "kategori": "Total Keseluruhan",
+        "cpu": sum(c["cpu"] for c in categories),
+        "mem": sum(c["mem"] for c in categories),
+        "storage": sum(c["storage"] for c in categories),
+        "network": sum(c["network"] for c in categories),
+    }
+
+    gap = aggregate_platform(
+        platform_name, existing, infra_utama_rows, pendukung_rows, storage_rows, network_final_mbps
+    )
+
+    return {
+        "platform": platform_name,
+        "categories": categories,
+        "total_row": total_row,
+        "existing": {
+            "cpu": gap["existing_cpu"],
+            "mem": gap["existing_mem"],
+            "storage": gap["existing_storage"],
+            "network": gap["existing_network"],
+        },
+        "gap": gap,
+    }
