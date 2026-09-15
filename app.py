@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import calculator as calc
+import db
 import sample_data
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ st.set_page_config(
     page_title="Kalkulator Kapasitas Infrastruktur",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 CUSTOM_CSS = """
@@ -191,11 +192,20 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# STATE INIT
+# STATE INIT — load dari database (Supabase, fallback SQLite) kalau ada
 # ---------------------------------------------------------------------------
 
 if "data" not in st.session_state:
-    st.session_state["data"] = sample_data.get_empty_state()
+    try:
+        loaded_state = db.load_app_state()
+    except Exception:
+        loaded_state = None
+    st.session_state["data"] = loaded_state if loaded_state else sample_data.get_empty_state()
+
+if "username" not in st.session_state:
+    st.session_state["username"] = "Guest"
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
 
 DATA = st.session_state["data"]
 DATA.setdefault("pendukung", [])
@@ -204,6 +214,130 @@ DATA.setdefault("monthly_history", [])
 DATA.setdefault("renewals", [])
 
 CLUSTER_SERVERS = ["Halmahera", "Adonara", "Development", "Other"]
+
+
+def persist(action_desc: str) -> None:
+    """Simpan DATA saat ini ke database dan catat ke activity log."""
+    try:
+        db.save_app_state(DATA)
+        db.log_action(st.session_state.get("username", "Guest"), action_desc)
+    except Exception as e:
+        st.warning(f"Gagal menyimpan ke database: {e}")
+
+
+# ---------------------------------------------------------------------------
+# SIDEBAR NAVIGATION — Setting / Capacity & Renewal / Login User
+# ---------------------------------------------------------------------------
+
+st.sidebar.markdown("### 📊 Kalkulator Kapasitas")
+if st.session_state["logged_in"]:
+    st.sidebar.success(f"👤 {st.session_state['username']}")
+else:
+    st.sidebar.caption("👤 Guest (belum login)")
+
+PAGE = st.sidebar.radio(
+    "Navigasi",
+    ["⚙️ Setting", "📊 Capacity & Renewal", "👤 Login User"],
+    index=1,
+    label_visibility="collapsed",
+)
+st.sidebar.markdown("---")
+try:
+    st.sidebar.caption(f"Backend DB: **{db.get_backend_label()}**")
+except Exception:
+    st.sidebar.caption("Backend DB: tidak diketahui")
+
+
+def render_login_page():
+    st.title("👤 Login User")
+    if st.session_state["logged_in"]:
+        st.success(f"Anda login sebagai **{st.session_state['username']}**.")
+        if st.button("Logout"):
+            db.log_action(st.session_state["username"], "Logout")
+            st.session_state["logged_in"] = False
+            st.session_state["username"] = "Guest"
+            st.rerun()
+        return
+
+    tab_login, tab_register = st.tabs(["Login", "Daftar Akun Baru"])
+    with tab_login:
+        with st.form("form_login"):
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
+            if st.form_submit_button("Login", type="primary"):
+                try:
+                    ok = db.verify_user(u.strip(), p)
+                except Exception as e:
+                    ok = False
+                    st.error(f"Gagal terhubung ke database: {e}")
+                else:
+                    if ok:
+                        st.session_state["logged_in"] = True
+                        st.session_state["username"] = u.strip()
+                        db.log_action(u.strip(), "Login")
+                        st.success("Login berhasil.")
+                        st.rerun()
+                    else:
+                        st.error("Username atau password salah.")
+    with tab_register:
+        with st.form("form_register"):
+            ru = st.text_input("Username Baru")
+            rp = st.text_input("Password", type="password", key="reg_pw")
+            rp2 = st.text_input("Ulangi Password", type="password", key="reg_pw2")
+            if st.form_submit_button("Daftar", type="primary"):
+                if not ru.strip() or not rp:
+                    st.error("Username dan password wajib diisi.")
+                elif rp != rp2:
+                    st.error("Password tidak cocok.")
+                else:
+                    try:
+                        ok, msg = db.create_user(ru.strip(), rp)
+                    except Exception as e:
+                        ok, msg = False, f"Gagal terhubung ke database: {e}"
+                    if ok:
+                        st.success(msg + " Silakan login di tab Login.")
+                    else:
+                        st.error(msg)
+
+
+def render_setting_page():
+    st.title("⚙️ Setting")
+
+    st.markdown('<div class="section-label">Status Database</div>', unsafe_allow_html=True)
+    try:
+        backend = db.get_backend_label()
+        if "Supabase" in backend:
+            st.success(f"Terhubung ke: **{backend}**")
+        else:
+            st.warning(f"Terhubung ke: **{backend}** — Supabase belum dikonfigurasi atau tidak bisa diakses, "
+                       f"data sementara disimpan lokal.")
+    except Exception as e:
+        st.error(f"Gagal terhubung ke database: {e}")
+
+    st.caption(
+        "Untuk mengaktifkan Supabase, isi `SUPABASE_DB_URL` di `.streamlit/secrets.toml` "
+        "dengan connection string PostgreSQL dari project Supabase Anda."
+    )
+
+    st.markdown('<div class="section-label">Pengguna Terdaftar</div>', unsafe_allow_html=True)
+    try:
+        users = db.list_users()
+        if users:
+            st.dataframe(pd.DataFrame(users), width='stretch', hide_index=True)
+        else:
+            st.info("Belum ada pengguna terdaftar. Daftar lewat menu 'Login User'.")
+    except Exception as e:
+        st.error(f"Gagal mengambil daftar pengguna: {e}")
+
+    st.markdown('<div class="section-label">Log Aktivitas</div>', unsafe_allow_html=True)
+    try:
+        logs = db.get_recent_logs(50)
+        if logs:
+            st.dataframe(pd.DataFrame(logs), width='stretch', hide_index=True)
+        else:
+            st.info("Belum ada aktivitas tercatat.")
+    except Exception as e:
+        st.error(f"Gagal mengambil log aktivitas: {e}")
 
 
 def fmt(n, dec=2):
@@ -382,6 +516,19 @@ RESULT = compute_all()
 
 
 # ---------------------------------------------------------------------------
+# ROUTING — halaman Setting / Login ditangani terpisah, selain itu lanjut
+# ke halaman Capacity & Renewal (Dashboard + 8 tab di bawah).
+# ---------------------------------------------------------------------------
+
+if PAGE == "⚙️ Setting":
+    render_setting_page()
+    st.stop()
+elif PAGE == "👤 Login User":
+    render_login_page()
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
 # HEADER
 # ---------------------------------------------------------------------------
 
@@ -508,6 +655,7 @@ with tab1:
             else:
                 upsert_platform(nama_p.strip(), cpu_p, mem_p, sto_p, net_p, sumber_p)
                 st.success(f"Platform '{nama_p}' tersimpan.")
+                persist(f"Simpan platform '{nama_p}'")
                 st.rerun()
 
     if DATA["platforms"]:
@@ -525,6 +673,7 @@ with tab1:
                 )
                 if cc2.button("🗑️ Hapus", key=f"del_plat_{p['platform']}", width='stretch'):
                     delete_platform(p["platform"])
+                    persist(f"Hapus platform '{p['platform']}'")
                     st.rerun()
     else:
         st.markdown('<div class="empty-box">Belum ada platform. Isi form di atas untuk mulai.</div>', unsafe_allow_html=True)
@@ -548,6 +697,7 @@ with tab1:
                 else:
                     upsert_produk_tps(plat_sel, nama_produk.strip(), cur_tps, fut_tps)
                     st.success(f"Produk '{nama_produk}' tersimpan di platform '{plat_sel}'.")
+                    persist(f"Simpan produk '{nama_produk}' di platform '{plat_sel}'")
                     st.rerun()
 
         any_produk = False
@@ -568,6 +718,7 @@ with tab1:
                     )
                     if cc2.button("🗑️ Hapus", key=f"del_prod_{plat}_{produk}", width='stretch'):
                         delete_produk(plat, produk)
+                        persist(f"Hapus produk '{produk}' dari platform '{plat}'")
                         st.rerun()
         if not any_produk:
             st.markdown('<div class="empty-box">Belum ada produk. Isi form di atas untuk menambah produk.</div>', unsafe_allow_html=True)
@@ -634,6 +785,7 @@ with tab2:
                         "cluster_server": cluster_server,
                     })
                 st.success("Infra Utama tersimpan.")
+                persist(f"Simpan Infra Utama produk '{produk_sel}' (cluster {cluster_server})")
                 st.rerun()
 
         # preview hasil hitung
@@ -682,6 +834,7 @@ with tab2:
                     "replication_multiplier": replication, "kuota_storage": kuota_storage,
                 })
                 st.success("Storage tersimpan.")
+                persist(f"Simpan Storage produk '{produk_sel}'")
                 st.rerun()
 
         srow_after = get_storage_row(plat_sel, produk_sel)
@@ -711,6 +864,7 @@ with tab2:
                             "buffer_pct": buffer_pd, "ha_multiplier": ha_pd,
                         })
                         st.success(f"Komponen '{nama_pd}' ditambahkan ke platform '{plat_sel}'.")
+                        persist(f"Tambah komponen pendukung '{nama_pd}' di platform '{plat_sel}'")
                         st.rerun()
 
             pendukung_this = [x for x in DATA["pendukung"] if x.get("platform") == plat_sel]
@@ -723,6 +877,7 @@ with tab2:
                 )
                 if cc2.button("🗑️", key=f"del_pendukung_{plat_sel}_{i}"):
                     DATA["pendukung"].remove(pd_item)
+                    persist(f"Hapus komponen pendukung '{pd_item['nama']}'")
                     st.rerun()
 
 
@@ -768,6 +923,7 @@ with tab3:
                     "buffer_pct": net_buffer, "ha_multiplier": net_ha,
                 })
                 st.success("Parameter Network tersimpan.")
+                persist(f"Simpan parameter Network produk '{produk_sel}'")
                 st.rerun()
 
         nrow_after = get_network_row(plat_sel, produk_sel)
@@ -792,6 +948,7 @@ with tab3:
                         "pct_alokasi": pct_alokasi, "existing_bandwidth": existing_bw,
                     })
                     st.success(f"Link '{nama_link}' ditambahkan.")
+                    persist(f"Tambah link '{nama_link}' pada produk '{produk_sel}'")
                     st.rerun()
 
         members = [m for m in DATA["network_members"] if m.get("platform") == plat_sel and m.get("produk") == produk_sel]
@@ -818,6 +975,7 @@ with tab3:
                     )
                     if cc3.button("🗑️", key=f"del_link_{plat_sel}_{produk_sel}_{i}"):
                         DATA["network_members"].remove(members[i])
+                        persist(f"Hapus link '{members[i]['nama_link']}'")
                         st.rerun()
         else:
             st.markdown('<div class="empty-box">Belum ada link/member. Tambahkan di form atas.</div>', unsafe_allow_html=True)
@@ -992,6 +1150,7 @@ with tab5:
                             "vol_trx_aktual": vol_trx_aktual if vol_trx_aktual > 0 else None,
                         })
                         st.success(f"Data bulan '{bulan_label}' tersimpan.")
+                        persist(f"Simpan riwayat bulan '{bulan_label}' untuk produk '{produk_sel}'")
                         st.rerun()
 
             entries = [m for m in DATA["monthly_history"] if m.get("platform") == plat_sel and m.get("produk") == produk_sel]
@@ -1018,6 +1177,7 @@ with tab5:
                     )
                     if cc2.button("🗑️", key=f"del_month_{plat_sel}_{produk_sel}_{i}"):
                         DATA["monthly_history"].remove(e)
+                        persist(f"Hapus riwayat bulan '{e['bulan']}' produk '{produk_sel}'")
                         st.rerun()
 
                 st.markdown('<div class="section-label">Grafik Perbandingan Bulanan</div>', unsafe_allow_html=True)
@@ -1200,6 +1360,7 @@ with tab7:
                         "jenis_event": r_jenis, "tanggal": r_tanggal.isoformat(), "catatan": r_catatan.strip(),
                     })
                     st.success(f"Renewal '{r_item}' tersimpan.")
+                    persist(f"Tambah renewal '{r_item}' untuk platform '{r_platform}'")
                     st.rerun()
 
         if not DATA["renewals"]:
@@ -1242,7 +1403,9 @@ with tab7:
                         cc1.markdown(f"**{r['item']}** — {r['jenis_event']}" + (f" · {r['vendor']}" if r.get("vendor") else ""))
                         cc2.markdown(f"{renewal_badge(r['status'])} {r['tanggal']}", unsafe_allow_html=True)
                         if cc3.button("🗑️", key=f"del_renewal_{r['_orig_idx']}"):
+                            item_name = r["item"]
                             DATA["renewals"].pop(r["_orig_idx"])
+                            persist(f"Hapus renewal '{item_name}'")
                             st.rerun()
                         if r.get("catatan"):
                             st.caption(r["catatan"])
@@ -1285,10 +1448,14 @@ with tab8:
     with c3:
         if st.button("🗑️ Kosongkan Semua Data", width='stretch'):
             st.session_state["data"] = sample_data.get_empty_state()
+            DATA = st.session_state["data"]
+            persist("Kosongkan semua data")
             st.rerun()
     with c4:
         if st.button("✨ Muat Data Contoh (Payment Switching)", width='stretch'):
             st.session_state["data"] = sample_data.get_sample_state()
+            DATA = st.session_state["data"]
+            persist("Muat data contoh Payment Switching")
             st.rerun()
 
     with st.expander("Upload / Load JSON"):
@@ -1297,7 +1464,9 @@ with tab8:
             try:
                 loaded = json.load(uploaded)
                 st.session_state["data"] = loaded
+                DATA = st.session_state["data"]
                 st.success("Data berhasil dimuat.")
+                persist("Load data dari file JSON")
                 st.rerun()
             except Exception as e:
                 st.error(f"Gagal memuat file: {e}")

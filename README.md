@@ -8,10 +8,45 @@ dengan indikator traffic-light (Hijau/Kuning/Merah).
 
 ## Struktur File
 
-- `app.py` — UI utama (navigasi sidebar, dashboard, form input, tabel editable).
+- `app.py` — UI utama (sidebar 3 halaman: Setting, Capacity & Renewal, Login User).
 - `calculator.py` — semua rumus perhitungan (murni Python, tanpa dependensi UI).
+- `db.py` — lapisan persistensi: Supabase (PostgreSQL) dengan fallback otomatis ke SQLite lokal.
 - `sample_data.py` — data contoh (preload) untuk demo/testing.
 - `requirements.txt` — daftar dependensi.
+
+## Database & Persistensi
+
+Aplikasi ini menyimpan seluruh data (platform, produk, infra, storage, network,
+riwayat bulanan, renewal) ke database, bukan hanya session memory. Prioritas koneksi:
+
+1. **Supabase (PostgreSQL)** — kalau `SUPABASE_DB_URL` terisi di secrets/env var dan bisa diakses.
+2. **SQLite lokal** (`local_data.db`) — fallback otomatis kalau Supabase gagal/belum dikonfigurasi.
+
+### Setup Supabase (opsional, untuk persistensi lintas-sesi yang lebih baik)
+
+1. Buat project gratis di [supabase.com](https://supabase.com).
+2. Di dashboard Supabase, buka **Project Settings → Database** dan salin **Connection string** (mode "Session" atau "Transaction").
+3. Salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml` (file ini di-gitignore, jangan di-commit), lalu isi:
+
+   ```toml
+   SUPABASE_DB_URL = "postgresql://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres"
+   ```
+
+4. Jalankan ulang aplikasi. Tabel (`app_state`, `users`, `activity_log`) dibuat otomatis saat pertama kali konek.
+5. Cek status koneksi di sidebar menu **⚙️ Setting**.
+
+Kalau `SUPABASE_DB_URL` tidak diisi atau gagal konek, aplikasi tetap jalan normal
+dengan fallback SQLite — tidak ada error yang menghentikan aplikasi.
+
+Untuk deploy di **Streamlit Community Cloud**, isi secret yang sama lewat
+**App settings → Secrets** di dashboard Streamlit Cloud (bukan file lokal).
+
+### Login & Log Aktivitas
+
+- Menu **👤 Login User** di sidebar: daftar akun baru atau login dengan akun yang ada.
+- Tanpa login, aksi tercatat sebagai user **Guest**.
+- Menu **⚙️ Setting** menampilkan status koneksi database, daftar pengguna terdaftar,
+  dan log aktivitas terakhir (siapa mengubah apa, kapan).
 
 ## Cara Run Lokal
 
