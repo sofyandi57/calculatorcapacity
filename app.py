@@ -7,6 +7,7 @@ Semua rumus/hitung ada di calculator.py. File ini hanya UI & state management.
 
 import io
 import json
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -217,10 +218,14 @@ DATA.setdefault("renewals", [])
 CLUSTER_SERVERS = ["Halmahera", "Adonara", "Development", "Other"]
 
 
-def build_excel_bytes(data: dict, result: dict) -> bytes:
+def build_excel_bytes(data: dict, result: dict, generated_by: str = "Guest") -> bytes:
     """Bangun file Excel lengkap (semua sheet) dari state & hasil hitung saat ini."""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame([{
+            "Tanggal Generate": datetime.now().strftime("%d %B %Y %H:%M:%S"),
+            "Dibuat oleh": generated_by,
+        }]).to_excel(writer, sheet_name="Info", index=False)
         pd.DataFrame(data["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
         pd.DataFrame(result["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
         pd.DataFrame(result["storage"]).to_excel(writer, sheet_name="Storage", index=False)
@@ -615,7 +620,7 @@ if st.session_state["logged_in"] and DATA["platforms"]:
         st.markdown("---")
         st.caption("📥 Download Laporan")
         try:
-            excel_bytes = build_excel_bytes(DATA, RESULT)
+            excel_bytes = build_excel_bytes(DATA, RESULT, generated_by=st.session_state["username"])
             st.download_button(
                 "⬇️ Excel", data=excel_bytes, file_name="kapasitas_infrastruktur.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1547,7 +1552,7 @@ with tab8:
                             mime="application/json", width='stretch')
 
     with c2:
-        excel_bytes = build_excel_bytes(DATA, RESULT)
+        excel_bytes = build_excel_bytes(DATA, RESULT, generated_by=st.session_state["username"])
         st.download_button("⬇️ Download Excel", data=excel_bytes, file_name="kapasitas_infrastruktur.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
 
