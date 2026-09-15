@@ -493,5 +493,61 @@ def generate_pdf_bytes(DATA: Dict[str, Any], RESULT: Dict[str, Any], generated_b
     else:
         story.append(Paragraph("Belum ada data renewal.", normal))
 
+    # === RINGKASAN A-B-C ===
+    story.append(PageBreak())
+    story.append(Paragraph("7. Ringkasan A-B-C — Kebutuhan Infra vs Kapasitas Existing", h1_style))
+    story.append(Paragraph(f"Tanggal Generate: {generated_at}", caption_style))
+
+    breakdowns = RESULT.get("platform_breakdown", [])
+    if not breakdowns:
+        story.append(Paragraph("Belum ada data platform.", normal))
+    for bd in breakdowns:
+        story.append(Paragraph(f"Platform: {bd['platform']}", h2_style))
+
+        story.append(Paragraph("A. Total FINAL Required (per kategori)", normal))
+        header_a = ["Kategori", "CPU (vCPU)", "Memory (GB)", "Storage (GB)", "Network (Mbps)"]
+        rows_a = [
+            [c["kategori"], _fmt(c["cpu"], 1), _fmt(c["mem"], 1), _fmt(c["storage"], 1), _fmt(c["network"], 1)]
+            for c in bd["categories"] + [bd["total_row"]]
+        ]
+        story.append(_styled_table(header_a, rows_a))
+        story.append(Spacer(1, 0.2 * cm))
+
+        story.append(Paragraph("B. Kapasitas Existing / Tersedia (isi manual)", normal))
+        ex = bd["existing"]
+        header_b = ["CPU (vCPU)", "Memory (GB)", "Storage (GB)", "Network (Mbps)"]
+        rows_b = [[_fmt(ex["cpu"], 1), _fmt(ex["mem"], 1), _fmt(ex["storage"], 1), _fmt(ex["network"], 1)]]
+        story.append(_styled_table(header_b, rows_b))
+        story.append(Spacer(1, 0.2 * cm))
+
+        story.append(Paragraph("C. Analisis Gap & Utilization", normal))
+        g = bd["gap"]
+        header_c = ["Resource", "Total Required", "Existing", "Sisa", "Utilization %", "Status"]
+        rows_c = [
+            ["CPU", _fmt(g["total_cpu"], 1), _fmt(g["existing_cpu"], 1), _fmt(g["sisa_cpu"], 1),
+             _fmt(g["util_cpu_pct"], 1), g["status_cpu"]],
+            ["Memory", _fmt(g["total_mem"], 1), _fmt(g["existing_mem"], 1), _fmt(g["sisa_mem"], 1),
+             _fmt(g["util_mem_pct"], 1), g["status_mem"]],
+            ["Storage", _fmt(g["total_storage"], 1), _fmt(g["existing_storage"], 1), _fmt(g["sisa_storage"], 1),
+             _fmt(g["util_storage_pct"], 1), g["status_storage"]],
+            ["Network", _fmt(g["total_network"], 1), _fmt(g["existing_network"], 1), _fmt(g["sisa_network"], 1),
+             _fmt(g["util_network_pct"], 1), g["status_network"]],
+        ]
+        story.append(_styled_table(header_c, rows_c, status_col=5))
+
+        bar_fig = go.Figure()
+        bar_fig.add_trace(go.Bar(name="Total Required",
+                                  x=["CPU", "Memory", "Storage", "Network"],
+                                  y=[g["total_cpu"], g["total_mem"], g["total_storage"], g["total_network"]]))
+        bar_fig.add_trace(go.Bar(name="Existing Capacity",
+                                  x=["CPU", "Memory", "Storage", "Network"],
+                                  y=[g["existing_cpu"], g["existing_mem"], g["existing_storage"], g["existing_network"]]))
+        bar_fig.update_layout(barmode="group", width=700, height=380, margin=dict(t=30, b=10, l=10, r=10),
+                               legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        bar_img = _fig_to_image(bar_fig, 16, 8.5)
+        if bar_img:
+            story.append(bar_img)
+        story.append(Spacer(1, 0.4 * cm))
+
     doc.build(story)
     return buffer.getvalue()

@@ -235,6 +235,16 @@ def build_excel_bytes(data: dict, result: dict, generated_by: str = "Guest") -> 
         pd.DataFrame(data["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
         pd.DataFrame(data["renewals"]).to_excel(writer, sheet_name="Renewal", index=False)
         pd.DataFrame(result["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
+
+        abc_rows = []
+        for bd in result.get("platform_breakdown", []):
+            for cat in bd["categories"] + [bd["total_row"]]:
+                abc_rows.append({"Platform": bd["platform"], **cat})
+        if abc_rows:
+            pd.DataFrame(abc_rows).rename(columns={
+                "kategori": "Kategori", "cpu": "CPU", "mem": "Memory",
+                "storage": "Storage", "network": "Network",
+            }).to_excel(writer, sheet_name="Ringkasan A-B-C", index=False)
     return buffer.getvalue()
 
 
@@ -602,9 +612,26 @@ def compute_all():
         )
         platform_agg.append(agg)
 
+    platform_breakdown = []
+    for p in DATA["platforms"]:
+        pname = p["platform"]
+        u_rows = [r for r in utama_calc if r.get("platform") == pname]
+        s_rows = [r for r in storage_calc if r.get("platform") == pname]
+        pd_rows = [r for r in pendukung_calc if r.get("platform") == pname]
+        net_rows = [r for r in network_calc if r.get("platform") == pname]
+        total_net = sum(r["final_network_mbps"] for r in net_rows)
+
+        breakdown = calc.aggregate_platform_breakdown(
+            pname,
+            {"cpu": p["cpu"], "memory": p["memory"], "storage": p["storage"], "network": p["network"]},
+            u_rows, pd_rows, s_rows, total_net,
+        )
+        platform_breakdown.append(breakdown)
+
     return {
         "utama": utama_calc, "storage": storage_calc, "network": network_calc,
         "pendukung": pendukung_calc, "cascade": cascade_calc, "platform_agg": platform_agg,
+        "platform_breakdown": platform_breakdown,
     }
 
 
@@ -744,7 +771,7 @@ else:
 st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
@@ -753,6 +780,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "6️⃣  Rekomendasi",
     "7️⃣  Renewal",
     "8️⃣  Export & Data",
+    "9️⃣  Ringkasan A-B-C",
 ])
 
 
@@ -1583,3 +1611,52 @@ with tab8:
                 st.rerun()
             except Exception as e:
                 st.error(f"Gagal memuat file: {e}")
+
+
+with tab9:
+    st.markdown('<div class="section-label">Ringkasan A-B-C — Kebutuhan Infra vs Kapasitas Existing</div>',
+                unsafe_allow_html=True)
+    if not RESULT["platform_breakdown"]:
+        st.markdown('<div class="empty-box">Belum ada data platform.</div>', unsafe_allow_html=True)
+    else:
+        platform_names_bd = [b["platform"] for b in RESULT["platform_breakdown"]]
+        pick_bd = st.selectbox("Pilih Platform", platform_names_bd, key="abc_platform_pick")
+        bd = next(b for b in RESULT["platform_breakdown"] if b["platform"] == pick_bd)
+
+        st.markdown(f"**Tanggal Generate:** {datetime.now().strftime('%d %B %Y, %H:%M')}")
+
+        st.markdown("#### A. Total FINAL Required (per kategori)")
+        rows_a = bd["categories"] + [bd["total_row"]]
+        df_a = pd.DataFrame(rows_a).rename(columns={
+            "kategori": "Kategori", "cpu": "CPU (vCPU)", "mem": "Memory (GB)",
+            "storage": "Storage (GB)", "network": "Network (Mbps)",
+        })
+        st.dataframe(df_a.round(2), width='stretch', hide_index=True)
+
+        st.markdown("#### B. Kapasitas Existing / Tersedia *(isi manual di tab Produk & Kapasitas)*")
+        df_b = pd.DataFrame([{
+            "CPU (vCPU)": bd["existing"]["cpu"], "Memory (GB)": bd["existing"]["mem"],
+            "Storage (GB)": bd["existing"]["storage"], "Network (Mbps)": bd["existing"]["network"],
+        }])
+        st.dataframe(df_b.round(2), width='stretch', hide_index=True)
+
+        st.markdown("#### C. Analisis Gap & Utilization")
+        gap = bd["gap"]
+        df_c = pd.DataFrame([
+            {"Resource": "CPU", "Total Required": gap["total_cpu"], "Existing": gap["existing_cpu"],
+             "Sisa": gap["sisa_cpu"], "Utilization %": gap["util_cpu_pct"], "Status": gap["status_cpu"]},
+            {"Resource": "Memory", "Total Required": gap["total_mem"], "Existing": gap["existing_mem"],
+             "Sisa": gap["sisa_mem"], "Utilization %": gap["util_mem_pct"], "Status": gap["status_mem"]},
+            {"Resource": "Storage", "Total Required": gap["total_storage"], "Existing": gap["existing_storage"],
+             "Sisa": gap["sisa_storage"], "Utilization %": gap["util_storage_pct"], "Status": gap["status_storage"]},
+            {"Resource": "Network", "Total Required": gap["total_network"], "Existing": gap["existing_network"],
+             "Sisa": gap["sisa_network"], "Utilization %": gap["util_network_pct"], "Status": gap["status_network"]},
+        ])
+        st.dataframe(df_c.round(2), width='stretch', hide_index=True)
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(name="Total Required", x=df_c["Resource"], y=df_c["Total Required"]))
+        fig_bar.add_trace(go.Bar(name="Existing Capacity", x=df_c["Resource"], y=df_c["Existing"]))
+        fig_bar.update_layout(barmode="group", height=350, margin=dict(t=30, b=10, l=10, r=10),
+                               legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig_bar, width='stretch')
