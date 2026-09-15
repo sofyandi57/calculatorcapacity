@@ -14,6 +14,7 @@ import streamlit as st
 
 import calculator as calc
 import db
+import pdf_export
 import sample_data
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,22 @@ DATA.setdefault("monthly_history", [])
 DATA.setdefault("renewals", [])
 
 CLUSTER_SERVERS = ["Halmahera", "Adonara", "Development", "Other"]
+
+
+def build_excel_bytes(data: dict, result: dict) -> bytes:
+    """Bangun file Excel lengkap (semua sheet) dari state & hasil hitung saat ini."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(data["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
+        pd.DataFrame(result["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
+        pd.DataFrame(result["storage"]).to_excel(writer, sheet_name="Storage", index=False)
+        pd.DataFrame(result["network"]).to_excel(writer, sheet_name="Network", index=False)
+        pd.DataFrame(result["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
+        pd.DataFrame(result["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
+        pd.DataFrame(data["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
+        pd.DataFrame(data["renewals"]).to_excel(writer, sheet_name="Renewal", index=False)
+        pd.DataFrame(result["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
+    return buffer.getvalue()
 
 
 def persist(action_desc: str) -> None:
@@ -518,6 +535,33 @@ def compute_all():
 
 
 RESULT = compute_all()
+
+
+# ---------------------------------------------------------------------------
+# SIDEBAR — Download Laporan (PDF & Excel), tersedia di semua halaman
+# ---------------------------------------------------------------------------
+
+if st.session_state["logged_in"] and DATA["platforms"]:
+    with st.sidebar:
+        st.markdown("---")
+        st.caption("📥 Download Laporan")
+        try:
+            excel_bytes = build_excel_bytes(DATA, RESULT)
+            st.download_button(
+                "⬇️ Excel", data=excel_bytes, file_name="kapasitas_infrastruktur.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch', key="sidebar_dl_excel",
+            )
+        except Exception as e:
+            st.caption(f"Gagal membuat Excel: {e}")
+        try:
+            pdf_bytes = pdf_export.generate_pdf_bytes(DATA, RESULT, generated_by=st.session_state["username"])
+            st.download_button(
+                "⬇️ PDF", data=pdf_bytes, file_name="laporan_kapasitas_infrastruktur.pdf",
+                mime="application/pdf", width='stretch', key="sidebar_dl_pdf",
+            )
+        except Exception as e:
+            st.caption(f"Gagal membuat PDF: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1434,18 +1478,8 @@ with tab8:
                             mime="application/json", width='stretch')
 
     with c2:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            pd.DataFrame(DATA["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
-            pd.DataFrame(RESULT["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
-            pd.DataFrame(RESULT["storage"]).to_excel(writer, sheet_name="Storage", index=False)
-            pd.DataFrame(RESULT["network"]).to_excel(writer, sheet_name="Network", index=False)
-            pd.DataFrame(RESULT["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
-            pd.DataFrame(RESULT["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
-            pd.DataFrame(DATA["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
-            pd.DataFrame(DATA["renewals"]).to_excel(writer, sheet_name="Renewal", index=False)
-            pd.DataFrame(RESULT["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
-        st.download_button("⬇️ Download Excel", data=buffer.getvalue(), file_name="kapasitas_infrastruktur.xlsx",
+        excel_bytes = build_excel_bytes(DATA, RESULT)
+        st.download_button("⬇️ Download Excel", data=excel_bytes, file_name="kapasitas_infrastruktur.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
 
     st.markdown('<div class="section-label">Kelola Data</div>', unsafe_allow_html=True)
