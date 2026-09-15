@@ -275,12 +275,12 @@ else:
 
 PAGE = st.sidebar.radio(
     "Navigasi",
-    ["⚙️ Setting", "📊 Capacity & Renewal", "👤 Login User"],
+    ["⚙️ Setting", "📊 Capacity & Renewal", "👤 Login User", "📖 Penjelasan"],
     index=1 if st.session_state["logged_in"] else 2,
     label_visibility="collapsed",
 )
 
-if not st.session_state["logged_in"] and PAGE != "👤 Login User":
+if not st.session_state["logged_in"] and PAGE not in ("👤 Login User", "📖 Penjelasan"):
     st.sidebar.warning("🔒 Silakan login terlebih dahulu.")
     PAGE = "👤 Login User"
 
@@ -671,9 +671,179 @@ if st.session_state["logged_in"] and DATA["platforms"]:
             st.caption(f"Gagal membuat PDF: {e}")
 
 
+def render_penjelasan_page():
+    st.title("📖 Penjelasan / Readme")
+    st.caption("Dokumentasi cara kerja Kalkulator Kapasitas Infrastruktur — logika hitung, alur data, dan fungsi.")
+
+    t1, t2, t3, t4, t5 = st.tabs([
+        "1️⃣ Ringkasan", "2️⃣ Current → Forecast", "3️⃣ Alur Data & Layer",
+        "4️⃣ Kamus Fungsi", "5️⃣ Export (Excel/PDF)",
+    ])
+
+    with t1:
+        st.markdown("""
+### Apa aplikasi ini?
+Kalkulator sizing infrastruktur IT berbasis **TPS (Transaction Per Second)**.
+Dari volume transaksi (sekarang & target masa depan), aplikasi menurunkan kebutuhan
+**CPU, Memory, Storage, dan Network**, lalu membandingkannya terhadap **kapasitas
+existing** untuk menentukan status (aman / mendekati / over capacity).
+
+### Ruang lingkup perhitungan
+| Komponen | Basis Hitung | Sheet/Tab terkait |
+|---|---|---|
+| Infra Utama (DB & Engine) | TPS × rasio resource/TPS | Produk & Kapasitas, Infra Utama & Storage |
+| Infra Pendukung (LB, monitoring, dsb) | Sizing manual (bukan TPS) | Infra Utama & Storage |
+| Storage | Volume transaksi/hari × ukuran data × retensi (kumulatif) | Infra Utama & Storage |
+| Network | TPS × bandwidth/transaksi, di-cascade ke link/member | Network |
+| Forecast & Scenario | Simulasi pertumbuhan TPS linear ke depan | Forecast & Scenario |
+| Rekomendasi | Klasifikasi utilisasi (under/normal/consider/need increase) | Rekomendasi |
+| Renewal | Kalender due date/EOSL per platform | Renewal |
+
+### Dua layer perbandingan
+- **Layer 1 — Platform**: total kebutuhan SEMUA produk dalam 1 platform vs **kapasitas existing** (shared pool fisik).
+- **Layer 2 — Produk**: kebutuhan 1 produk saja vs **kuota** yang dialokasikan ke produk itu dari platform induknya.
+
+Produk bisa HIJAU di Layer 2 (masih di bawah kuotanya) tapi platformnya MERAH di Layer 1
+karena produk lain di platform yang sama menghabiskan kapasitas — kedua layer harus dicek bersamaan.
+""")
+
+    with t2:
+        st.markdown("""
+### Kenapa ada "Current TPS" dan "Future TPS"?
+- **Current TPS** = volume transaksi/detik **saat ini** → dipakai untuk cek apakah
+  kapasitas existing sudah pas/kurang **hari ini juga**.
+- **Future TPS** = target/estimasi volume transaksi pada **periode planning ke depan**
+  (mis. 6-12 bulan lagi, hasil proyeksi bisnis) → dipakai untuk keputusan procurement.
+
+### Rumus inti (linear terhadap TPS)
+```
+Required @ Current  = Current TPS  × Rasio Resource/TPS
+Required @ Future    = Future TPS   × Rasio Resource/TPS
+FINAL Required        = Required@Future × (1 + Buffer%) × HA Multiplier
+```
+- **Rasio Resource/TPS** = hasil benchmark/load-test: berapa vCore/GB dibutuhkan untuk
+  menangani 1 transaksi/detik. Beda untuk sistem DB vs Engine karena karakteristik
+  resource-nya beda (DB berat di I/O & memory, Engine berat di CPU/compute).
+- **Buffer/Headroom (%)** = ruang cadangan ekstra di atas kebutuhan riil (mis. 20%),
+  untuk menyerap lonjakan traffic tak terduga.
+- **HA Multiplier** = pengali UNIT node (bukan persentase): 1 = single node,
+  2 = active-passive/active-active 2 node, 3 = cluster 3 node.
+- Angka **FINAL** inilah yang dipakai untuk keputusan penambahan kapasitas
+  (procurement), bukan angka Required@Current maupun Required@Future mentah.
+
+### Hubungan dengan transaksi incremental
+Setiap kenaikan TPS **berbanding lurus (linear)** dengan kenaikan kebutuhan resource,
+karena rasio resource/TPS diasumsikan konstan (hasil benchmark). Artinya:
+```
+ΔRequired = ΔTPS × Rasio Resource/TPS
+```
+Ini dipakai di tab **Forecast & Scenario**: dengan asumsi pertumbuhan TPS X% per periode,
+aplikasi mensimulasikan TPS di setiap periode ke depan, menghitung Required di titik itu,
+dan mencari **periode pertama di mana kapasitas existing terlampaui** ("breach period") —
+sekaligus **Kapasitas Maksimum Transaksi**: TPS tertinggi yang masih bisa ditangani
+sebelum salah satu resource (CPU/Memory/Storage/Network) jadi bottleneck.
+
+### Kasus khusus: Storage
+Storage **tidak** dihitung dari rate TPS (karena storage bersifat **kumulatif**, bukan
+rate sesaat seperti TPS), melainkan dari **volume transaksi per hari**:
+```
+Storage Required (GB) = Volume Transaksi/Hari × Ukuran Data/Transaksi (KB) × Retensi (hari)
+                          ÷ 1.048.576 (konversi KB → GB) × (1 + Housekeeping%)
+FINAL Storage Required = Required@Future × (1 + Buffer%) × Replication/HA Multiplier
+```
+""")
+
+    with t3:
+        st.markdown("""
+### Alur data end-to-end
+```
+1. Input Produk & Platform          (Tab 1)
+        │
+2. Input Infra Utama (DB/Engine)    (Tab 2) ──► FINAL CPU, FINAL Memory per produk
+   + Input Storage                  (Tab 2) ──► FINAL Storage per produk
+   + Input Infra Pendukung          (Tab 2) ──► FINAL CPU/Mem/Storage non-TPS
+        │
+3. Input Network                    (Tab 3) ──► FINAL Bandwidth per produk,
+                                                  di-cascade ke Member/Link
+        │
+4. Agregasi per Platform  (calculator.aggregate_platform)
+        │  Total Required = Σ FINAL semua produk dalam 1 platform
+        ▼
+5. Dashboard  — Total Required vs Existing (Layer 1) → status HIJAU/KUNING/MERAH
+   Rekomendasi — klasifikasi utilisasi per resource per platform
+   Renewal    — kalender due date per platform (independen dari TPS)
+```
+
+### Breakdown kategori (tab "Ringkasan A-B-C")
+`calculator.aggregate_platform_breakdown()` memecah Total FINAL Required jadi 4 kategori
+sebelum dijumlah ke Total Keseluruhan — meniru format laporan standar:
+1. Infra Utama - Kategori Utama (DB/Engine)
+2. Infra Utama - Kategori Pendukung
+3. Storage Capacity (sheet tersendiri, basis retensi)
+4. Network
+
+### Traffic-light & threshold
+| Konteks | Aman | Warning | Kritis |
+|---|---|---|---|
+| Resource vs Kuota Produk (Layer 2) | ≤70% HIJAU | 70-90% KUNING | >90% MERAH |
+| Link/Member Network | ≤70% OK | 70-100% WARNING | >100% OVER CAPACITY |
+| Platform/Global vs Existing (Layer 1) | ≤80% OK | 80-100% WARNING | >100% OVER CAPACITY |
+| Rekomendasi kapasitas | <50% UNDER UTILIZE | 50-80% NORMAL, ≥80% CONSIDER TO INCREASE | >90% NEED TO INCREASE |
+""")
+
+    with t4:
+        st.markdown("""
+### Kamus fungsi utama — `calculator.py` (murni hitung, tanpa UI)
+| Fungsi | Kegunaan |
+|---|---|
+| `calc_infra_utama_row()` / `calc_infra_utama()` | Required & FINAL CPU/Memory per baris/semua baris Infra Utama (basis TPS) |
+| `calc_storage_row()` / `calc_storage()` | Required & FINAL Storage per baris (basis volume transaksi/hari × retensi) |
+| `calc_pendukung_row()` / `calc_pendukung()` | FINAL CPU/Memory/Storage Infra Pendukung (sizing manual) |
+| `calc_network_row()` / `calc_network()` | FINAL Bandwidth per produk (basis TPS) |
+| `calc_cascade_row()` / `calc_cascade()` | Distribusi bandwidth platform ke Member/Link sesuai % alokasi |
+| `aggregate_platform()` | Total Required (Final) semua produk dalam 1 platform vs Existing → Sisa, Utilization%, Status |
+| `aggregate_platform_breakdown()` | Sama seperti di atas, tapi dipecah per kategori (format A/B/C) |
+| `status_resource()` / `status_link()` / `status_global()` | Traffic-light HIJAU/KUNING/MERAH atau OK/WARNING/OVER CAPACITY sesuai konteks & threshold |
+| `get_recommendation()` | Klasifikasi UNDER UTILIZE / NORMAL / CONSIDER TO INCREASE / NEED TO INCREASE |
+| `calc_renewal_status()` | Status SUDAH LEWAT / MENDEKATI / AMAN berdasarkan tanggal due date |
+| `calc_monthly_utilization()` | Bandingkan TPS aktual bulanan vs kapasitas untuk grafik Riwayat Bulanan |
+| `calc_linear_scenario()` / `find_breach_period()` | Simulasi pertumbuhan TPS linear & titik periode pertama kapasitas terlampaui |
+| `calc_max_tps_resource()` / `calc_max_tps_capacity()` | Kapasitas Maksimum Transaksi (TPS) sebelum resource jadi bottleneck |
+
+### Modul lain
+| File | Kegunaan |
+|---|---|
+| `app.py` | UI Streamlit — halaman, tab, form input, dashboard, download |
+| `db.py` | Persistensi (Supabase/PostgreSQL, fallback SQLite), login, activity log |
+| `sample_data.py` | Data contoh (Payment Switching) & state kosong awal |
+| `pdf_export.py` | Generate laporan PDF (Dashboard, detail, riwayat, forecast, rekomendasi, renewal, ringkasan A-B-C) |
+| `excel_template.py` | Generate Excel default template dengan rumus hidup (Dashboard, Input-*, Output & Gap Analysis) |
+""")
+
+    with t5:
+        st.markdown("""
+### Download Excel (default template)
+Dibangun oleh `excel_template.py` — **bukan** dump angka statis, tapi workbook dengan
+**rumus Excel asli** (SUMIF, INDEX/MATCH, IFERROR) yang otomatis recalculate saat Anda
+edit sel kuning (input manual) di file itu sendiri:
+- **Dashboard** — Layer 1 (per Platform) & Layer 2 (per Produk)
+- **Input - Infra Utama / Infra Pendukung / Storage Capacity / Network Capacity** —
+  sel kuning = isi manual, sel abu-abu = formula (jangan diedit langsung)
+- **Output & Gap Analysis** — Section A (breakdown kategori), B (kapasitas existing,
+  isi manual), C (analisis gap & utilization)
+- Sheet tambahan: **Info** (tanggal generate & dibuat oleh), **Riwayat Bulanan**, **Renewal**
+
+### Download PDF
+Dibangun oleh `pdf_export.py` — laporan siap-cetak (landscape A4) berisi seluruh isi
+aplikasi: Dashboard (dengan gauge chart), detail Infra/Storage/Network, Riwayat Bulanan
+(grafik), Forecast & Scenario (grafik), Rekomendasi, Renewal, dan Ringkasan A-B-C
+(dengan bar chart) — setiap section mencantumkan **tanggal generate**.
+""")
+
+
 # ---------------------------------------------------------------------------
-# ROUTING — halaman Setting / Login ditangani terpisah, selain itu lanjut
-# ke halaman Capacity & Renewal (Dashboard + 8 tab di bawah).
+# ROUTING — halaman Setting / Login / Penjelasan ditangani terpisah, selain
+# itu lanjut ke halaman Capacity & Renewal (Dashboard + 9 tab di bawah).
 # ---------------------------------------------------------------------------
 
 if PAGE == "⚙️ Setting":
@@ -681,6 +851,9 @@ if PAGE == "⚙️ Setting":
     st.stop()
 elif PAGE == "👤 Login User":
     render_login_page()
+    st.stop()
+elif PAGE == "📖 Penjelasan":
+    render_penjelasan_page()
     st.stop()
 
 
