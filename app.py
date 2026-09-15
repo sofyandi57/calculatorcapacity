@@ -195,7 +195,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 
 if "data" not in st.session_state:
-    st.session_state["data"] = sample_data.get_sample_state()
+    st.session_state["data"] = sample_data.get_empty_state()
 
 DATA = st.session_state["data"]
 DATA.setdefault("pendukung", [])
@@ -384,16 +384,97 @@ RESULT = compute_all()
 st.markdown(
     """
     <div class="app-header"><span class="logo">📊</span><h1>Kalkulator Kapasitas Infrastruktur</h1></div>
-    <p class="app-sub">Sizing infrastruktur IT berbasis TPS — isi Produk, lalu Infra & Storage, lalu Network, dan lihat hasilnya di Dashboard.</p>
+    <p class="app-sub">Sizing infrastruktur IT berbasis TPS — Dashboard di atas selalu menampilkan sisa kapasitas terkini, isi/perbarui data di tab bawah.</p>
     """,
     unsafe_allow_html=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# DASHBOARD — PERSISTEN DI ATAS, TAMPIL DI SEMUA TAB
+# ---------------------------------------------------------------------------
+
+if not DATA["platforms"]:
+    st.markdown(
+        '<div class="empty-box">Belum ada data. Mulai isi <b>Platform & Produk</b> di tab "1️⃣ Produk & Kapasitas" di bawah.</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    platform_pick = st.selectbox("Pilih Platform", platform_names(), key="dash_platform")
+    agg = next((a for a in RESULT["platform_agg"] if a["platform"] == platform_pick), None)
+
+    if agg:
+        cols = st.columns(4)
+        metrics = [
+            ("CPU", agg["sisa_cpu"], agg["existing_cpu"], agg["util_cpu_pct"], agg["status_cpu"], "vCore"),
+            ("Memory", agg["sisa_mem"], agg["existing_mem"], agg["util_mem_pct"], agg["status_mem"], "GB"),
+            ("Storage", agg["sisa_storage"], agg["existing_storage"], agg["util_storage_pct"], agg["status_storage"], "GB"),
+            ("Network", agg["sisa_network"], agg["existing_network"], agg["util_network_pct"], agg["status_network"], "Mbps"),
+        ]
+        for col, (label, sisa, total, util, status, unit) in zip(cols, metrics):
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="metric-card">
+                        <div class="metric-title">Sisa {label}</div>
+                        <div class="metric-value">{fmt(sisa)} {unit}</div>
+                        <div class="metric-sub">dari {fmt(total)} {unit} existing</div>
+                        <div style="margin-top:0.5rem">{badge(status)}
+                            <span style="color:#94a3b8;font-size:0.78rem"> · {fmt(util)}% terpakai</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        g1, g2, g3, g4 = st.columns(4)
+        g1.plotly_chart(gauge_chart("CPU", agg["total_cpu"], agg["existing_cpu"]), width='stretch')
+        g2.plotly_chart(gauge_chart("Memory", agg["total_mem"], agg["existing_mem"]), width='stretch')
+        g3.plotly_chart(gauge_chart("Storage", agg["total_storage"], agg["existing_storage"]), width='stretch')
+        g4.plotly_chart(gauge_chart("Network", agg["total_network"], agg["existing_network"]), width='stretch')
+
+    st.markdown(
+        """
+        <div class="note-box">
+        💡 Status per Produk (vs Kuota Produk) bisa <b>HIJAU</b> meski status Platform (vs Kapasitas
+        Existing) <b>MERAH</b> — kuota produk adalah alokasi internal, sedangkan status platform
+        mencerminkan total pemakaian gabungan terhadap kapasitas fisik existing.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("📋 Detail per Platform"):
+        df_l1 = pd.DataFrame(RESULT["platform_agg"])
+        if not df_l1.empty:
+            st.dataframe(df_l1.round(2), width='stretch', hide_index=True)
+
+    with st.expander("📋 Detail per Produk (Infra Utama)"):
+        df_l2 = pd.DataFrame(RESULT["utama"])
+        if not df_l2.empty:
+            st.dataframe(df_l2.round(2), width='stretch', hide_index=True)
+
+    over_rows = []
+    for _, row in pd.DataFrame(RESULT["platform_agg"]).iterrows():
+        for res, label in [("cpu", "CPU"), ("mem", "Memory"), ("storage", "Storage"), ("network", "Network")]:
+            if row[f"status_{res}"] == "OVER CAPACITY":
+                over_rows.append({
+                    "Platform": row["platform"], "Resource": label,
+                    "Total Kebutuhan": row[f"total_{res}"], "Existing": row[f"existing_{res}"],
+                    "Utilisasi %": row[f"util_{res}_pct"],
+                })
+    if over_rows:
+        st.markdown("#### 🔴 Resource OVER CAPACITY")
+        st.dataframe(pd.DataFrame(over_rows).round(2), width='stretch', hide_index=True)
+
+st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
+
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
-    "4️⃣  Dashboard & Export",
+    "4️⃣  Export & Data",
 ])
 
 
@@ -724,113 +805,49 @@ with tab3:
 
 
 # ---------------------------------------------------------------------------
-# TAB 4 — DASHBOARD & EXPORT
+# TAB 4 — EXPORT & DATA
 # ---------------------------------------------------------------------------
 
 with tab4:
-    if not DATA["platforms"]:
-        st.markdown('<div class="empty-box">Belum ada data. Mulai dari tab 1.</div>', unsafe_allow_html=True)
-    else:
-        platform_pick = st.selectbox("Pilih Platform", platform_names(), key="dash_platform")
-        agg = next((a for a in RESULT["platform_agg"] if a["platform"] == platform_pick), None)
+    st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
 
-        if agg:
-            cols = st.columns(4)
-            metrics = [
-                ("CPU", agg["sisa_cpu"], agg["existing_cpu"], agg["util_cpu_pct"], agg["status_cpu"], "vCore"),
-                ("Memory", agg["sisa_mem"], agg["existing_mem"], agg["util_mem_pct"], agg["status_mem"], "GB"),
-                ("Storage", agg["sisa_storage"], agg["existing_storage"], agg["util_storage_pct"], agg["status_storage"], "GB"),
-                ("Network", agg["sisa_network"], agg["existing_network"], agg["util_network_pct"], agg["status_network"], "Mbps"),
-            ]
-            for col, (label, sisa, total, util, status, unit) in zip(cols, metrics):
-                with col:
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <div class="metric-title">Sisa {label}</div>
-                            <div class="metric-value">{fmt(sisa)} {unit}</div>
-                            <div class="metric-sub">dari {fmt(total)} {unit} existing</div>
-                            <div style="margin-top:0.5rem">{badge(status)}
-                                <span style="color:#94a3b8;font-size:0.78rem"> · {fmt(util)}% terpakai</span>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    with c1:
+        json_bytes = json.dumps(DATA, indent=2, ensure_ascii=False).encode("utf-8")
+        st.download_button("⬇️ Download JSON", data=json_bytes, file_name="kapasitas_infrastruktur.json",
+                            mime="application/json", width='stretch')
 
-            g1, g2, g3, g4 = st.columns(4)
-            g1.plotly_chart(gauge_chart("CPU", agg["total_cpu"], agg["existing_cpu"]), width='stretch')
-            g2.plotly_chart(gauge_chart("Memory", agg["total_mem"], agg["existing_mem"]), width='stretch')
-            g3.plotly_chart(gauge_chart("Storage", agg["total_storage"], agg["existing_storage"]), width='stretch')
-            g4.plotly_chart(gauge_chart("Network", agg["total_network"], agg["existing_network"]), width='stretch')
+    with c2:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            pd.DataFrame(DATA["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
+            pd.DataFrame(RESULT["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
+            pd.DataFrame(RESULT["storage"]).to_excel(writer, sheet_name="Storage", index=False)
+            pd.DataFrame(RESULT["network"]).to_excel(writer, sheet_name="Network", index=False)
+            pd.DataFrame(RESULT["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
+            pd.DataFrame(RESULT["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
+            pd.DataFrame(RESULT["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
+        st.download_button("⬇️ Download Excel", data=buffer.getvalue(), file_name="kapasitas_infrastruktur.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
 
-        st.markdown(
-            """
-            <div class="note-box">
-            💡 Status per Produk (vs Kuota Produk) bisa <b>HIJAU</b> meski status Platform (vs Kapasitas
-            Existing) <b>MERAH</b> — kuota produk adalah alokasi internal, sedangkan status platform
-            mencerminkan total pemakaian gabungan terhadap kapasitas fisik existing.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.markdown('<div class="section-label">Kelola Data</div>', unsafe_allow_html=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        if st.button("🗑️ Kosongkan Semua Data", width='stretch'):
+            st.session_state["data"] = sample_data.get_empty_state()
+            st.rerun()
+    with c4:
+        if st.button("✨ Muat Data Contoh (Payment Switching)", width='stretch'):
+            st.session_state["data"] = sample_data.get_sample_state()
+            st.rerun()
 
-        with st.expander("📋 Detail per Platform"):
-            df_l1 = pd.DataFrame(RESULT["platform_agg"])
-            if not df_l1.empty:
-                st.dataframe(df_l1.round(2), width='stretch', hide_index=True)
-
-        with st.expander("📋 Detail per Produk (Infra Utama)"):
-            df_l2 = pd.DataFrame(RESULT["utama"])
-            if not df_l2.empty:
-                st.dataframe(df_l2.round(2), width='stretch', hide_index=True)
-
-        over_rows = []
-        for _, row in pd.DataFrame(RESULT["platform_agg"]).iterrows():
-            for res, label in [("cpu", "CPU"), ("mem", "Memory"), ("storage", "Storage"), ("network", "Network")]:
-                if row[f"status_{res}"] == "OVER CAPACITY":
-                    over_rows.append({
-                        "Platform": row["platform"], "Resource": label,
-                        "Total Kebutuhan": row[f"total_{res}"], "Existing": row[f"existing_{res}"],
-                        "Utilisasi %": row[f"util_{res}_pct"],
-                    })
-        if over_rows:
-            st.markdown("#### 🔴 Resource OVER CAPACITY")
-            st.dataframe(pd.DataFrame(over_rows).round(2), width='stretch', hide_index=True)
-
-        st.markdown('<div class="section-label">Export & Reset</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-            json_bytes = json.dumps(DATA, indent=2, ensure_ascii=False).encode("utf-8")
-            st.download_button("⬇️ Download JSON", data=json_bytes, file_name="kapasitas_infrastruktur.json",
-                                mime="application/json", width='stretch')
-
-        with c2:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                pd.DataFrame(DATA["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
-                pd.DataFrame(RESULT["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
-                pd.DataFrame(RESULT["storage"]).to_excel(writer, sheet_name="Storage", index=False)
-                pd.DataFrame(RESULT["network"]).to_excel(writer, sheet_name="Network", index=False)
-                pd.DataFrame(RESULT["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
-                pd.DataFrame(RESULT["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
-                pd.DataFrame(RESULT["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
-            st.download_button("⬇️ Download Excel", data=buffer.getvalue(), file_name="kapasitas_infrastruktur.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
-
-        with c3:
-            if st.button("🔄 Reset ke Data Contoh", width='stretch'):
-                st.session_state["data"] = sample_data.get_sample_state()
+    with st.expander("Upload / Load JSON"):
+        uploaded = st.file_uploader("Load state dari file JSON", type=["json"])
+        if uploaded is not None:
+            try:
+                loaded = json.load(uploaded)
+                st.session_state["data"] = loaded
+                st.success("Data berhasil dimuat.")
                 st.rerun()
-
-        with st.expander("Upload / Load JSON"):
-            uploaded = st.file_uploader("Load state dari file JSON", type=["json"])
-            if uploaded is not None:
-                try:
-                    loaded = json.load(uploaded)
-                    st.session_state["data"] = loaded
-                    st.success("Data berhasil dimuat.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Gagal memuat file: {e}")
+            except Exception as e:
+                st.error(f"Gagal memuat file: {e}")
