@@ -325,6 +325,79 @@ def calc_max_tps_capacity(
 
 
 # ---------------------------------------------------------------------------
+# RIWAYAT BULANAN (actual TPS per bulan -> utilisasi)
+# ---------------------------------------------------------------------------
+
+def calc_monthly_utilization(
+    tps_aktual: float,
+    db_row: Dict[str, Any],
+    eng_row: Dict[str, Any],
+    kuota_cpu: float,
+    kuota_mem: float,
+    network_row: Dict[str, Any] | None = None,
+    existing_network: float = 0.0,
+    vol_trx_aktual: float | None = None,
+    storage_row: Dict[str, Any] | None = None,
+    kuota_storage: float = 0.0,
+) -> Dict[str, Any]:
+    """Hitung utilisasi CPU/Memory/(Network)/(Storage) dari satu TPS aktual bulan
+    tertentu, memakai rasio/buffer/HA/kuota yang sedang aktif di Infra Utama produk.
+    Dipakai untuk grafik Riwayat Bulanan (bukan proyeksi forecast)."""
+    rasio_cpu_total = float(db_row.get("rasio_cpu", 0) or 0) + float(eng_row.get("rasio_cpu", 0) or 0)
+    rasio_mem_total = float(db_row.get("rasio_mem", 0) or 0) + float(eng_row.get("rasio_mem", 0) or 0)
+    buffer_pct = float(db_row.get("buffer_pct", 0) or 0)
+    ha_multiplier = float(db_row.get("ha_multiplier", 1) or 1)
+
+    final_cpu = tps_aktual * rasio_cpu_total * (1 + buffer_pct / 100.0) * ha_multiplier
+    final_mem = tps_aktual * rasio_mem_total * (1 + buffer_pct / 100.0) * ha_multiplier
+    util_cpu = safe_div(final_cpu, kuota_cpu) * 100
+    util_mem = safe_div(final_mem, kuota_mem) * 100
+
+    result = {
+        "tps_aktual": tps_aktual,
+        "final_cpu": final_cpu,
+        "final_mem": final_mem,
+        "util_cpu_pct": util_cpu,
+        "util_mem_pct": util_mem,
+        "status_cpu": status_resource(util_cpu),
+        "status_mem": status_resource(util_mem),
+    }
+
+    if network_row:
+        kb_req = float(network_row.get("kb_req", 0) or 0)
+        kb_resp = float(network_row.get("kb_resp", 0) or 0)
+        overhead_pct = float(network_row.get("overhead_pct", 0) or 0)
+        net_buffer_pct = float(network_row.get("buffer_pct", 0) or 0)
+        net_ha = float(network_row.get("ha_multiplier", 1) or 1)
+        req_net = calc_network_required(tps_aktual, kb_req, kb_resp, overhead_pct)
+        final_net = req_net * (1 + net_buffer_pct / 100.0) * net_ha
+        util_net = safe_div(final_net, existing_network) * 100
+        result.update({
+            "final_network": final_net,
+            "util_network_pct": util_net,
+            "status_network": status_resource(util_net),
+        })
+
+    if storage_row and vol_trx_aktual is not None:
+        ukuran_kb = float(storage_row.get("ukuran_kb", 0) or 0)
+        retensi_hari = float(storage_row.get("retensi_hari", 0) or 0)
+        housekeeping_pct = float(storage_row.get("housekeeping_pct", 0) or 0)
+        sto_buffer_pct = float(storage_row.get("buffer_pct", 0) or 0)
+        replication_multiplier = float(storage_row.get("replication_multiplier", 1) or 1)
+        storage_gb = calc_storage_gb(vol_trx_aktual, ukuran_kb, retensi_hari, housekeeping_pct)
+        final_storage = storage_gb * (1 + sto_buffer_pct / 100.0) * replication_multiplier
+        util_storage = safe_div(final_storage, kuota_storage) * 100
+        result.update({
+            "vol_trx_aktual": vol_trx_aktual,
+            "final_storage": final_storage,
+            "util_storage_pct": util_storage,
+            "status_storage": status_resource(util_storage),
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # FORECAST & SCENARIO (linear)
 # ---------------------------------------------------------------------------
 

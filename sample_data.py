@@ -110,6 +110,14 @@ def get_sample_state() -> dict:
                 "ha_multiplier": 2.0,
             }
         ],
+        "monthly_history": [
+            {"platform": "Payment Switching", "produk": "Core Banking - Payment Switching",
+             "bulan": "Juni 2026", "tps_aktual": 950.0, "vol_trx_aktual": 38_500_000.0},
+            {"platform": "Payment Switching", "produk": "Core Banking - Payment Switching",
+             "bulan": "Juli 2026", "tps_aktual": 1050.0, "vol_trx_aktual": 40_800_000.0},
+            {"platform": "Payment Switching", "produk": "Core Banking - Payment Switching",
+             "bulan": "Agustus 2026", "tps_aktual": 1150.0, "vol_trx_aktual": 43_200_000.0},
+        ],
     }
     return copy.deepcopy(state)
 
@@ -122,4 +130,5 @@ def get_empty_state() -> dict:
         "network": [],
         "network_members": [],
         "pendukung": [],
+        "monthly_history": [],
     }
