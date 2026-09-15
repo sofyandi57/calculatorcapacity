@@ -201,6 +201,9 @@ DATA = st.session_state["data"]
 DATA.setdefault("pendukung", [])
 DATA.setdefault("network_members", [])
 DATA.setdefault("monthly_history", [])
+DATA.setdefault("renewals", [])
+
+CLUSTER_SERVERS = ["Halmahera", "Adonara", "Development", "Other"]
 
 
 def fmt(n, dec=2):
@@ -272,7 +275,7 @@ def upsert_platform(nama, cpu, memory, storage, network, sumber):
 
 def delete_platform(nama):
     DATA["platforms"] = [p for p in DATA["platforms"] if p["platform"] != nama]
-    for key in ("infra_utama", "storage", "network", "network_members", "pendukung", "monthly_history"):
+    for key in ("infra_utama", "storage", "network", "network_members", "pendukung", "monthly_history", "renewals"):
         DATA[key] = [r for r in DATA[key] if r.get("platform") != nama]
 
 
@@ -471,13 +474,15 @@ else:
 st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
     "4️⃣  Forecast & Scenario",
     "5️⃣  Riwayat Bulanan (Grafik)",
-    "6️⃣  Export & Data",
+    "6️⃣  Rekomendasi",
+    "7️⃣  Renewal",
+    "8️⃣  Export & Data",
 ])
 
 
@@ -613,12 +618,20 @@ with tab2:
             kuota_mem = c4.number_input("Kuota Memory Produk", min_value=0.0, step=1.0,
                                          value=float(db_row.get("kuota_mem", 0.0)), key="infra_kmem")
 
+            cluster_default = db_row.get("cluster_server", CLUSTER_SERVERS[0])
+            cluster_idx = CLUSTER_SERVERS.index(cluster_default) if cluster_default in CLUSTER_SERVERS else 0
+            cluster_server = st.selectbox(
+                "🖥️ Cluster Server — di mana kapasitas ini ditambahkan?",
+                CLUSTER_SERVERS, index=cluster_idx, key="infra_cluster",
+            )
+
             if st.button("💾 Simpan Infra Utama", width='stretch', type="primary"):
                 for sistem, rc, rm in (("DB", db_cpu, db_mem), ("Engine", eng_cpu, eng_mem)):
                     target = rows.get(sistem)
                     target.update({
                         "rasio_cpu": rc, "rasio_mem": rm, "buffer_pct": buffer_pct,
                         "ha_multiplier": ha_mult, "kuota_cpu": kuota_cpu, "kuota_mem": kuota_mem,
+                        "cluster_server": cluster_server,
                     })
                 st.success("Infra Utama tersimpan.")
                 st.rerun()
@@ -629,6 +642,9 @@ with tab2:
             res = calc.calc_infra_utama(list(rows_after.values()))
             total_cpu = sum(r["final_cpu"] for r in res)
             total_mem = sum(r["final_mem"] for r in res)
+            tagged_cluster = rows_after.get("DB", {}).get("cluster_server")
+            if tagged_cluster:
+                st.markdown(f"<span class='pill'>🖥️ Cluster Server: <b>{tagged_cluster}</b></span>", unsafe_allow_html=True)
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("FINAL CPU (DB+Engine)", f"{fmt(total_cpu)} vCore")
             k2.metric("FINAL Memory (DB+Engine)", f"{fmt(total_mem)} GB")
@@ -1047,10 +1063,200 @@ with tab5:
 
 
 # ---------------------------------------------------------------------------
-# TAB 6 — EXPORT & DATA
+# TAB 6 — REKOMENDASI
 # ---------------------------------------------------------------------------
 
 with tab6:
+    if not DATA["platforms"]:
+        st.markdown('<div class="empty-box">Belum ada data. Mulai dari tab 1.</div>', unsafe_allow_html=True)
+    else:
+        def rec_badge(rec: str) -> str:
+            color = calc.RECOMMENDATION_COLOR.get(rec, "#6b7280")
+            return f'<span class="badge" style="background:{color}">{rec}</span>'
+
+        st.markdown('<div class="section-label">Level Platform (vs Kapasitas Existing)</div>', unsafe_allow_html=True)
+        plat_rows = []
+        for agg in RESULT["platform_agg"]:
+            for res_key, label, unit in [
+                ("cpu", "CPU", "vCore"), ("mem", "Memory", "GB"),
+                ("storage", "Storage", "GB"), ("network", "Network", "Mbps"),
+            ]:
+                util = agg[f"util_{res_key}_pct"]
+                plat_rows.append({
+                    "Platform": agg["platform"], "Resource": label,
+                    "Total": agg[f"total_{res_key}"], "Existing": agg[f"existing_{res_key}"],
+                    "Utilisasi %": util, "Rekomendasi": calc.get_recommendation(util),
+                })
+
+        flagged_plat = [r for r in plat_rows if r["Rekomendasi"] != "NORMAL"]
+        if flagged_plat:
+            for r in sorted(flagged_plat, key=lambda x: -x["Utilisasi %"]):
+                st.markdown(
+                    f'<div class="warn-box">{rec_badge(r["Rekomendasi"])} '
+                    f'<b>{r["Platform"]}</b> — {r["Resource"]}: {fmt(r["Utilisasi %"])}% '
+                    f'(Total {fmt(r["Total"])} dari {fmt(r["Existing"])})</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.success("Semua platform dalam rentang utilisasi normal (50%–80%).")
+
+        with st.expander("📋 Detail Rekomendasi per Platform"):
+            df_plat_rec = pd.DataFrame(plat_rows)
+            st.dataframe(df_plat_rec.round(2), width='stretch', hide_index=True)
+
+        st.markdown('<div class="section-label">Level Produk (vs Kuota Produk)</div>', unsafe_allow_html=True)
+        prod_rows = []
+        for plat in platform_names():
+            for produk in produk_for_platform(plat):
+                rows_p = get_infra_rows(plat, produk)
+                if not rows_p:
+                    continue
+                res_p = calc.calc_infra_utama(list(rows_p.values()))
+                total_cpu_p = sum(r["final_cpu"] for r in res_p)
+                total_mem_p = sum(r["final_mem"] for r in res_p)
+                kuota_cpu_p = float(next(iter(rows_p.values())).get("kuota_cpu", 0) or 0)
+                kuota_mem_p = float(next(iter(rows_p.values())).get("kuota_mem", 0) or 0)
+                util_cpu_p = calc.safe_div(total_cpu_p, kuota_cpu_p) * 100
+                util_mem_p = calc.safe_div(total_mem_p, kuota_mem_p) * 100
+                cluster = next(iter(rows_p.values())).get("cluster_server", "-")
+                prod_rows.append({
+                    "Platform": plat, "Produk": produk, "Cluster Server": cluster,
+                    "Resource": "CPU", "Total": total_cpu_p, "Kuota": kuota_cpu_p,
+                    "Utilisasi %": util_cpu_p, "Rekomendasi": calc.get_recommendation(util_cpu_p),
+                })
+                prod_rows.append({
+                    "Platform": plat, "Produk": produk, "Cluster Server": cluster,
+                    "Resource": "Memory", "Total": total_mem_p, "Kuota": kuota_mem_p,
+                    "Utilisasi %": util_mem_p, "Rekomendasi": calc.get_recommendation(util_mem_p),
+                })
+                srow_p = get_storage_row(plat, produk)
+                if srow_p:
+                    res_s_p = calc.calc_storage_row(srow_p)
+                    prod_rows.append({
+                        "Platform": plat, "Produk": produk, "Cluster Server": cluster,
+                        "Resource": "Storage", "Total": res_s_p["final_storage_gb"],
+                        "Kuota": srow_p.get("kuota_storage", 0),
+                        "Utilisasi %": res_s_p["util_storage_pct"],
+                        "Rekomendasi": calc.get_recommendation(res_s_p["util_storage_pct"]),
+                    })
+
+        flagged_prod = [r for r in prod_rows if r["Rekomendasi"] != "NORMAL"]
+        if flagged_prod:
+            for r in sorted(flagged_prod, key=lambda x: -x["Utilisasi %"]):
+                st.markdown(
+                    f'<div class="warn-box">{rec_badge(r["Rekomendasi"])} '
+                    f'<b>{r["Produk"]}</b> ({r["Platform"]} · {r["Cluster Server"]}) — {r["Resource"]}: '
+                    f'{fmt(r["Utilisasi %"])}%</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.success("Semua produk dalam rentang utilisasi normal (50%–80%).")
+
+        with st.expander("📋 Detail Rekomendasi per Produk"):
+            if prod_rows:
+                st.dataframe(pd.DataFrame(prod_rows).round(2), width='stretch', hide_index=True)
+
+        st.markdown(
+            """
+            <div class="note-box">
+            💡 <b>UNDER UTILIZE</b> (&lt;50%): kapasitas berlebih, bisa dipertimbangkan realokasi.
+            <b>CONSIDER TO INCREASE</b> (≥80%): mendekati batas, mulai rencanakan penambahan kapasitas.
+            <b>NEED TO INCREASE</b> (&gt;90%): perlu segera ditambah kapasitasnya.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# TAB 7 — RENEWAL
+# ---------------------------------------------------------------------------
+
+with tab7:
+    st.markdown('<div class="section-label">Kalender Renewal / Due Date per Platform</div>', unsafe_allow_html=True)
+    st.caption("Catat item yang punya tanggal renewal/EOSL/End of Contract per platform. Status dihitung otomatis terhadap tanggal hari ini.")
+
+    if not DATA["platforms"]:
+        st.info("Tambahkan platform terlebih dahulu di tab 1 sebelum mencatat renewal.")
+    else:
+        import datetime as _dt
+
+        with st.form("form_renewal", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            r_platform = c1.selectbox("Platform", platform_names(), key="ren_platform")
+            r_item = c2.text_input("Item/Komponen", placeholder="Contoh: IBM P9 (Prod DC)")
+            r_vendor = c3.text_input("Vendor (opsional)", placeholder="Contoh: IBM")
+            c4, c5 = st.columns(2)
+            r_jenis = c4.selectbox("Jenis Event", ["EOSL", "End of Support", "End of Contract",
+                                                    "Due Date Action Plan", "Lainnya"])
+            r_tanggal = c5.date_input("Tanggal Renewal/Due Date", value=_dt.date.today())
+            r_catatan = st.text_input("Catatan (opsional)")
+            if st.form_submit_button("💾 Simpan Renewal", width='stretch', type="primary"):
+                if not r_item.strip():
+                    st.error("Item/Komponen wajib diisi.")
+                else:
+                    DATA["renewals"].append({
+                        "platform": r_platform, "item": r_item.strip(), "vendor": r_vendor.strip(),
+                        "jenis_event": r_jenis, "tanggal": r_tanggal.isoformat(), "catatan": r_catatan.strip(),
+                    })
+                    st.success(f"Renewal '{r_item}' tersimpan.")
+                    st.rerun()
+
+        if not DATA["renewals"]:
+            st.markdown('<div class="empty-box">Belum ada data renewal. Isi form di atas.</div>', unsafe_allow_html=True)
+        else:
+            def renewal_badge(status: str) -> str:
+                color = calc.RENEWAL_STATUS_COLOR.get(status, "#6b7280")
+                return f'<span class="badge" style="background:{color}">{status}</span>'
+
+            computed_renewals = []
+            for orig_i, r in enumerate(DATA["renewals"]):
+                tgl = _dt.date.fromisoformat(r["tanggal"])
+                rs = calc.calc_renewal_status(tgl)
+                computed_renewals.append({**r, **rs, "_orig_idx": orig_i})
+
+            urgent = [r for r in computed_renewals if r["status"] in ("SUDAH LEWAT", "MENDEKATI")]
+            if urgent:
+                st.markdown('<div class="section-label">Perlu Perhatian</div>', unsafe_allow_html=True)
+                for r in sorted(urgent, key=lambda x: x["days_remaining"]):
+                    ket = (f"sudah lewat {abs(r['days_remaining'])} hari" if r["status"] == "SUDAH LEWAT"
+                           else f"{r['days_remaining']} hari lagi")
+                    st.markdown(
+                        f'<div class="warn-box">{renewal_badge(r["status"])} '
+                        f'<b>{r["item"]}</b> ({r["platform"]}{" · " + r["vendor"] if r.get("vendor") else ""}) — '
+                        f'{r["jenis_event"]} pada <b>{r["tanggal"]}</b> ({ket})</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.success("Tidak ada renewal yang sudah lewat atau mendekati (≤90 hari).")
+
+            st.markdown('<div class="section-label">Semua Item per Platform</div>', unsafe_allow_html=True)
+            for plat in platform_names():
+                items = [r for i, r in enumerate(computed_renewals) if r["platform"] == plat]
+                if not items:
+                    continue
+                st.markdown(f"**{plat}**")
+                for r in sorted(items, key=lambda x: x["days_remaining"]):
+                    with st.container(border=True):
+                        cc1, cc2, cc3 = st.columns([4, 3, 1])
+                        cc1.markdown(f"**{r['item']}** — {r['jenis_event']}" + (f" · {r['vendor']}" if r.get("vendor") else ""))
+                        cc2.markdown(f"{renewal_badge(r['status'])} {r['tanggal']}", unsafe_allow_html=True)
+                        if cc3.button("🗑️", key=f"del_renewal_{r['_orig_idx']}"):
+                            DATA["renewals"].pop(r["_orig_idx"])
+                            st.rerun()
+                        if r.get("catatan"):
+                            st.caption(r["catatan"])
+
+            with st.expander("📋 Tabel Detail Renewal"):
+                df_ren_show = pd.DataFrame(computed_renewals).drop(columns=["_orig_idx"])
+                st.dataframe(df_ren_show.round(0), width='stretch', hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 8 — EXPORT & DATA
+# ---------------------------------------------------------------------------
+
+with tab8:
     st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
 
@@ -1069,6 +1275,7 @@ with tab6:
             pd.DataFrame(RESULT["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
             pd.DataFrame(RESULT["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
             pd.DataFrame(DATA["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
+            pd.DataFrame(DATA["renewals"]).to_excel(writer, sheet_name="Renewal", index=False)
             pd.DataFrame(RESULT["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
         st.download_button("⬇️ Download Excel", data=buffer.getvalue(), file_name="kapasitas_infrastruktur.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')

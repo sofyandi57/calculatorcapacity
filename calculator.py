@@ -5,6 +5,7 @@ Tidak ada logika UI di sini — hanya fungsi hitung.
 """
 
 from __future__ import annotations
+from datetime import date
 from typing import Dict, Any, List
 
 
@@ -322,6 +323,61 @@ def calc_max_tps_capacity(
         "bottleneck_resource": bottleneck_resource,
         "max_tps": max_tps,
     }
+
+
+# ---------------------------------------------------------------------------
+# REKOMENDASI KAPASITAS
+# ---------------------------------------------------------------------------
+
+RECOMMENDATION_COLOR = {
+    "NEED TO INCREASE": "#dc2626",
+    "CONSIDER TO INCREASE": "#f59e0b",
+    "UNDER UTILIZE": "#3b82f6",
+    "NORMAL": "#16a34a",
+}
+
+
+def get_recommendation(utilization_pct: float) -> str:
+    """Rekomendasi kapasitas berdasarkan persentase utilisasi:
+    >90%  -> NEED TO INCREASE
+    >=80% -> CONSIDER TO INCREASE
+    <50%  -> UNDER UTILIZE
+    lainnya -> NORMAL
+    """
+    if utilization_pct > 90:
+        return "NEED TO INCREASE"
+    if utilization_pct >= 80:
+        return "CONSIDER TO INCREASE"
+    if utilization_pct < 50:
+        return "UNDER UTILIZE"
+    return "NORMAL"
+
+
+# ---------------------------------------------------------------------------
+# RENEWAL / DUE DATE
+# ---------------------------------------------------------------------------
+
+RENEWAL_STATUS_COLOR = {
+    "SUDAH LEWAT": "#dc2626",
+    "MENDEKATI": "#f59e0b",
+    "AMAN": "#16a34a",
+}
+
+
+def calc_renewal_status(tanggal: date, warn_days: int = 90, today: date | None = None) -> Dict[str, Any]:
+    """Hitung status renewal terhadap hari ini.
+    SUDAH LEWAT jika tanggal < hari ini, MENDEKATI jika dalam warn_days ke depan,
+    AMAN jika masih jauh."""
+    if today is None:
+        today = date.today()
+    days_remaining = (tanggal - today).days
+    if days_remaining < 0:
+        status = "SUDAH LEWAT"
+    elif days_remaining <= warn_days:
+        status = "MENDEKATI"
+    else:
+        status = "AMAN"
+    return {"days_remaining": days_remaining, "status": status}
 
 
 # ---------------------------------------------------------------------------
