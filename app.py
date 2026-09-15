@@ -200,6 +200,7 @@ if "data" not in st.session_state:
 DATA = st.session_state["data"]
 DATA.setdefault("pendukung", [])
 DATA.setdefault("network_members", [])
+DATA.setdefault("monthly_history", [])
 
 
 def fmt(n, dec=2):
@@ -271,7 +272,7 @@ def upsert_platform(nama, cpu, memory, storage, network, sumber):
 
 def delete_platform(nama):
     DATA["platforms"] = [p for p in DATA["platforms"] if p["platform"] != nama]
-    for key in ("infra_utama", "storage", "network", "network_members", "pendukung"):
+    for key in ("infra_utama", "storage", "network", "network_members", "pendukung", "monthly_history"):
         DATA[key] = [r for r in DATA[key] if r.get("platform") != nama]
 
 
@@ -292,7 +293,7 @@ def upsert_produk_tps(platform, produk, current_tps, future_tps):
 
 
 def delete_produk(platform, produk):
-    for key in ("infra_utama", "storage", "network", "network_members"):
+    for key in ("infra_utama", "storage", "network", "network_members", "monthly_history"):
         DATA[key] = [r for r in DATA[key] if not (r.get("platform") == platform and r.get("produk") == produk)]
 
 
@@ -470,12 +471,13 @@ else:
 st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
     "4️⃣  Forecast & Scenario",
-    "5️⃣  Export & Data",
+    "5️⃣  Riwayat Bulanan (Grafik)",
+    "6️⃣  Export & Data",
 ])
 
 
@@ -928,10 +930,127 @@ with tab4:
 
 
 # ---------------------------------------------------------------------------
-# TAB 5 — EXPORT & DATA
+# TAB 5 — RIWAYAT BULANAN (GRAFIK)
 # ---------------------------------------------------------------------------
 
 with tab5:
+    all_pairs = [(plat, produk) for plat in platform_names() for produk in produk_for_platform(plat)]
+
+    if not all_pairs:
+        st.markdown('<div class="empty-box">Tambahkan Produk di tab 1 terlebih dahulu.</div>', unsafe_allow_html=True)
+    else:
+        labels = [f"{produk}  ·  {plat}" for plat, produk in all_pairs]
+        pick = st.selectbox("Pilih Produk", labels, key="monthly_pick")
+        idx = labels.index(pick)
+        plat_sel, produk_sel = all_pairs[idx]
+
+        infra_rows = get_infra_rows(plat_sel, produk_sel)
+        db_row = infra_rows.get("DB", {})
+        eng_row = infra_rows.get("Engine", {})
+        network_row = get_network_row(plat_sel, produk_sel)
+        storage_row = get_storage_row(plat_sel, produk_sel)
+        platform_obj = next((p for p in DATA["platforms"] if p["platform"] == plat_sel), {})
+        existing_network = float(platform_obj.get("network", 0) or 0)
+        kuota_cpu = float(db_row.get("kuota_cpu", 0) or 0)
+        kuota_mem = float(db_row.get("kuota_mem", 0) or 0)
+        kuota_storage = float(storage_row.get("kuota_storage", 0) or 0) if storage_row else 0.0
+
+        st.markdown('<div class="section-label">Input Data Aktual per Bulan</div>', unsafe_allow_html=True)
+        st.caption("Masukkan TPS aktual (dan opsional volume transaksi/hari untuk storage) tiap bulan agar bisa dibandingkan trennya.")
+
+        if not db_row or not eng_row:
+            st.markdown('<div class="empty-box">Isi dulu Infra Utama (tab 2) untuk produk ini sebelum input riwayat bulanan.</div>', unsafe_allow_html=True)
+        else:
+            with st.form("form_monthly", clear_on_submit=True):
+                c1, c2, c3 = st.columns(3)
+                bulan_label = c1.text_input("Bulan", placeholder="Contoh: Agustus 2026")
+                tps_aktual = c2.number_input("TPS Aktual (rata-rata/peak)", min_value=0.0, step=1.0)
+                vol_trx_aktual = c3.number_input("Volume Trx/Hari Aktual (opsional, untuk Storage)", min_value=0.0, step=1000.0)
+                if st.form_submit_button("💾 Simpan Data Bulan Ini", width='stretch', type="primary"):
+                    if not bulan_label.strip():
+                        st.error("Nama bulan wajib diisi.")
+                    else:
+                        DATA["monthly_history"].append({
+                            "platform": plat_sel, "produk": produk_sel, "bulan": bulan_label.strip(),
+                            "tps_aktual": tps_aktual,
+                            "vol_trx_aktual": vol_trx_aktual if vol_trx_aktual > 0 else None,
+                        })
+                        st.success(f"Data bulan '{bulan_label}' tersimpan.")
+                        st.rerun()
+
+            entries = [m for m in DATA["monthly_history"] if m.get("platform") == plat_sel and m.get("produk") == produk_sel]
+
+            if not entries:
+                st.markdown('<div class="empty-box">Belum ada data bulanan untuk produk ini. Isi form di atas.</div>', unsafe_allow_html=True)
+            else:
+                computed_rows = []
+                for e in entries:
+                    res = calc.calc_monthly_utilization(
+                        e["tps_aktual"], db_row, eng_row, kuota_cpu, kuota_mem,
+                        network_row, existing_network,
+                        e.get("vol_trx_aktual"), storage_row, kuota_storage,
+                    )
+                    computed_rows.append({"bulan": e["bulan"], **res})
+
+                st.markdown('<div class="section-label">Daftar Bulan</div>', unsafe_allow_html=True)
+                for i, e in enumerate(entries):
+                    cc1, cc2 = st.columns([5, 1])
+                    cc1.markdown(
+                        f"**{e['bulan']}** <span class='pill'>TPS <b>{fmt(e['tps_aktual'],0)}</b></span>"
+                        + (f" <span class='pill'>Vol Trx <b>{fmt(e['vol_trx_aktual'],0)}</b>/hari</span>" if e.get("vol_trx_aktual") else ""),
+                        unsafe_allow_html=True,
+                    )
+                    if cc2.button("🗑️", key=f"del_month_{plat_sel}_{produk_sel}_{i}"):
+                        DATA["monthly_history"].remove(e)
+                        st.rerun()
+
+                st.markdown('<div class="section-label">Grafik Perbandingan Bulanan</div>', unsafe_allow_html=True)
+                df_m = pd.DataFrame(computed_rows)
+
+                fig_tps = go.Figure()
+                fig_tps.add_trace(go.Bar(x=df_m["bulan"], y=df_m["tps_aktual"], name="TPS Aktual", marker_color="#2563eb"))
+                fig_tps.update_layout(
+                    height=280, margin=dict(l=20, r=20, t=30, b=20), title="TPS Aktual per Bulan",
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_tps, width='stretch')
+
+                fig_util = go.Figure()
+                fig_util.add_trace(go.Scatter(x=df_m["bulan"], y=df_m["util_cpu_pct"], name="CPU %", mode="lines+markers"))
+                fig_util.add_trace(go.Scatter(x=df_m["bulan"], y=df_m["util_mem_pct"], name="Memory %", mode="lines+markers"))
+                if "util_network_pct" in df_m:
+                    fig_util.add_trace(go.Scatter(x=df_m["bulan"], y=df_m["util_network_pct"], name="Network %", mode="lines+markers"))
+                if "util_storage_pct" in df_m:
+                    fig_util.add_trace(go.Scatter(x=df_m["bulan"], y=df_m["util_storage_pct"], name="Storage %", mode="lines+markers"))
+                fig_util.add_hline(y=100, line_dash="dash", line_color="#dc2626", annotation_text="100%")
+                fig_util.add_hline(y=70, line_dash="dot", line_color="#f59e0b", annotation_text="70%")
+                fig_util.update_layout(
+                    height=320, margin=dict(l=20, r=20, t=30, b=20), title="Utilisasi (%) per Bulan",
+                    xaxis_title="Bulan", yaxis_title="Utilisasi (%)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_util, width='stretch')
+
+                if len(df_m) >= 2:
+                    delta_tps = df_m["tps_aktual"].iloc[-1] - df_m["tps_aktual"].iloc[-2]
+                    delta_pct = calc.safe_div(delta_tps, df_m["tps_aktual"].iloc[-2]) * 100
+                    arrow = "🔺" if delta_tps > 0 else ("🔻" if delta_tps < 0 else "➖")
+                    st.markdown(
+                        f'<div class="note-box">{arrow} Perubahan TPS dari <b>{df_m["bulan"].iloc[-2]}</b> ke '
+                        f'<b>{df_m["bulan"].iloc[-1]}</b>: {fmt(delta_tps,0)} TPS ({fmt(delta_pct,1)}%).</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                with st.expander("📋 Tabel Detail Bulanan"):
+                    st.dataframe(df_m.round(2), width='stretch', hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 6 — EXPORT & DATA
+# ---------------------------------------------------------------------------
+
+with tab6:
     st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
 
@@ -949,6 +1068,7 @@ with tab5:
             pd.DataFrame(RESULT["network"]).to_excel(writer, sheet_name="Network", index=False)
             pd.DataFrame(RESULT["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
             pd.DataFrame(RESULT["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
+            pd.DataFrame(DATA["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
             pd.DataFrame(RESULT["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
         st.download_button("⬇️ Download Excel", data=buffer.getvalue(), file_name="kapasitas_infrastruktur.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
