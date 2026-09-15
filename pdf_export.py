@@ -476,7 +476,8 @@ def generate_pdf_bytes(DATA: Dict[str, Any], RESULT: Dict[str, Any], generated_b
 
     renewals = DATA.get("renewals", [])
     if renewals:
-        header = ["Platform", "Item/Komponen", "Vendor", "Jenis Event", "Tanggal", "Status", "Progress", "Catatan"]
+        header = ["Platform", "Item/Komponen", "Vendor", "Jenis Event", "Tanggal", "Status", "Progress",
+                   "PIC", "Harga", "Risiko", "Product Impacted", "Catatan"]
         rows = []
         for r in renewals:
             try:
@@ -488,9 +489,11 @@ def generate_pdf_bytes(DATA: Dict[str, Any], RESULT: Dict[str, Any], generated_b
             rows.append([
                 r.get("platform", ""), r.get("item", ""), r.get("vendor", ""),
                 r.get("jenis_event", ""), r.get("tanggal", ""), status,
-                r.get("status_progress", "On Going"), r.get("catatan", ""),
+                r.get("status_progress", "On Going"),
+                r.get("pic", ""), r.get("harga", ""), r.get("risiko", ""),
+                r.get("product_impacted", ""), r.get("catatan", ""),
             ])
-        story.append(_styled_table(header, rows, status_col=5))
+        story.append(_styled_table(header, rows, status_col=5, wrap_header=True))
     else:
         story.append(Paragraph("Belum ada data renewal.", normal))
 

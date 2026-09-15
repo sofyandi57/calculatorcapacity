@@ -710,6 +710,11 @@ def render_renewal_page():
                                                         "Due Date Action Plan", "Lainnya"])
                 r_tanggal = c5.date_input("Tanggal Renewal/Due Date", value=_dt.date.today())
                 r_progress = c6.selectbox("Status Progress", RENEWAL_PROGRESS_OPTIONS)
+                c7, c8, c9, c10 = st.columns(4)
+                r_pic = c7.text_input("PIC (opsional)", placeholder="Contoh: Budi")
+                r_harga = c8.text_input("Harga (opsional)", placeholder="Contoh: Rp 500.000.000")
+                r_risiko = c9.text_input("Risiko (opsional)", placeholder="Contoh: Downtime jika telat")
+                r_impacted = c10.text_input("Product Impacted (opsional)", placeholder="Contoh: Core Banking")
                 r_catatan = st.text_input("Catatan (opsional)")
                 if st.form_submit_button("💾 Simpan Renewal", width='stretch', type="primary"):
                     if not r_item.strip():
@@ -718,7 +723,10 @@ def render_renewal_page():
                         DATA["renewals"].append({
                             "platform": r_platform, "item": r_item.strip(), "vendor": r_vendor.strip(),
                             "jenis_event": r_jenis, "tanggal": r_tanggal.isoformat(),
-                            "status_progress": r_progress, "catatan": r_catatan.strip(),
+                            "status_progress": r_progress,
+                            "pic": r_pic.strip(), "harga": r_harga.strip(),
+                            "risiko": r_risiko.strip(), "product_impacted": r_impacted.strip(),
+                            "catatan": r_catatan.strip(),
                         })
                         st.success(f"Renewal '{r_item}' tersimpan.")
                         persist(f"Tambah renewal '{r_item}' untuk platform '{r_platform}'")
@@ -746,6 +754,17 @@ def render_renewal_page():
                             DATA["renewals"].pop(orig_i)
                             persist(f"Hapus renewal '{item_name}'")
                             st.rerun()
+                        detail_bits = []
+                        if r.get("pic"):
+                            detail_bits.append(f"PIC: {r['pic']}")
+                        if r.get("harga"):
+                            detail_bits.append(f"Harga: {r['harga']}")
+                        if r.get("risiko"):
+                            detail_bits.append(f"Risiko: {r['risiko']}")
+                        if r.get("product_impacted"):
+                            detail_bits.append(f"Product Impacted: {r['product_impacted']}")
+                        if detail_bits:
+                            st.caption(" · ".join(detail_bits))
                         if r.get("catatan"):
                             st.caption(r["catatan"])
 
@@ -801,6 +820,17 @@ def render_renewal_page():
                                 f"{_renewal_date_badge(r['status'])} {_renewal_progress_badge(r['status_progress'])} {r['tanggal']}",
                                 unsafe_allow_html=True,
                             )
+                            detail_bits = []
+                            if r.get("pic"):
+                                detail_bits.append(f"PIC: {r['pic']}")
+                            if r.get("harga"):
+                                detail_bits.append(f"Harga: {r['harga']}")
+                            if r.get("risiko"):
+                                detail_bits.append(f"Risiko: {r['risiko']}")
+                            if r.get("product_impacted"):
+                                detail_bits.append(f"Product Impacted: {r['product_impacted']}")
+                            if detail_bits:
+                                st.caption(" · ".join(detail_bits))
                             if r.get("catatan"):
                                 st.caption(r["catatan"])
 
