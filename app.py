@@ -15,6 +15,7 @@ import streamlit as st
 
 import calculator as calc
 import db
+import excel_template
 import pdf_export
 import sample_data
 
@@ -219,32 +220,37 @@ CLUSTER_SERVERS = ["Halmahera", "Adonara", "Development", "Other"]
 
 
 def build_excel_bytes(data: dict, result: dict, generated_by: str = "Guest") -> bytes:
-    """Bangun file Excel lengkap (semua sheet) dari state & hasil hitung saat ini."""
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        pd.DataFrame([{
-            "Tanggal Generate": datetime.now().strftime("%d %B %Y %H:%M:%S"),
-            "Dibuat oleh": generated_by,
-        }]).to_excel(writer, sheet_name="Info", index=False)
-        pd.DataFrame(data["platforms"]).to_excel(writer, sheet_name="Platforms", index=False)
-        pd.DataFrame(result["utama"]).to_excel(writer, sheet_name="Infra Utama", index=False)
-        pd.DataFrame(result["storage"]).to_excel(writer, sheet_name="Storage", index=False)
-        pd.DataFrame(result["network"]).to_excel(writer, sheet_name="Network", index=False)
-        pd.DataFrame(result["cascade"]).to_excel(writer, sheet_name="Network Cascade", index=False)
-        pd.DataFrame(result["pendukung"]).to_excel(writer, sheet_name="Pendukung", index=False)
-        pd.DataFrame(data["monthly_history"]).to_excel(writer, sheet_name="Riwayat Bulanan", index=False)
-        pd.DataFrame(data["renewals"]).to_excel(writer, sheet_name="Renewal", index=False)
-        pd.DataFrame(result["platform_agg"]).to_excel(writer, sheet_name="Gap Analysis", index=False)
+    """Bangun file Excel default template (Dashboard, Input - Infra Utama/Pendukung/
+    Storage/Network, Output & Gap Analysis — dengan rumus hidup, bukan angka statis),
+    ditambah sheet Info serta sheet pelengkap (Riwayat Bulanan, Renewal)."""
+    wb = excel_template.build_template_workbook(data)
 
-        abc_rows = []
-        for bd in result.get("platform_breakdown", []):
-            for cat in bd["categories"] + [bd["total_row"]]:
-                abc_rows.append({"Platform": bd["platform"], **cat})
-        if abc_rows:
-            pd.DataFrame(abc_rows).rename(columns={
-                "kategori": "Kategori", "cpu": "CPU", "mem": "Memory",
-                "storage": "Storage", "network": "Network",
-            }).to_excel(writer, sheet_name="Ringkasan A-B-C", index=False)
+    ws_info = wb.create_sheet("Info", 0)
+    ws_info["A1"] = "Tanggal Generate"
+    ws_info["B1"] = datetime.now().strftime("%d %B %Y %H:%M:%S")
+    ws_info["A2"] = "Dibuat oleh"
+    ws_info["B2"] = generated_by
+    ws_info.column_dimensions["A"].width = 20
+    ws_info.column_dimensions["B"].width = 30
+
+    if data.get("monthly_history"):
+        ws_hist = wb.create_sheet("Riwayat Bulanan")
+        for j, col in enumerate(data["monthly_history"][0].keys(), start=1):
+            ws_hist.cell(row=1, column=j, value=col)
+        for i, r in enumerate(data["monthly_history"], start=2):
+            for j, v in enumerate(r.values(), start=1):
+                ws_hist.cell(row=i, column=j, value=v)
+
+    if data.get("renewals"):
+        ws_ren = wb.create_sheet("Renewal")
+        for j, col in enumerate(data["renewals"][0].keys(), start=1):
+            ws_ren.cell(row=1, column=j, value=col)
+        for i, r in enumerate(data["renewals"], start=2):
+            for j, v in enumerate(r.values(), start=1):
+                ws_ren.cell(row=i, column=j, value=v)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
     return buffer.getvalue()
 
 
