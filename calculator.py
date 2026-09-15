@@ -265,6 +265,166 @@ def calc_pendukung(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # AGGREGATION per Platform (Layer 1) vs Kapasitas Existing
 # ---------------------------------------------------------------------------
 
+def calc_max_tps_resource(kuota_or_existing: float, per_tps_factor: float) -> float:
+    """Kapasitas Maksimum TPS untuk satu resource = kuota (atau existing) / FINAL-per-TPS.
+    FINAL-per-TPS sudah termasuk buffer% dan HA Multiplier."""
+    if per_tps_factor <= 0:
+        return float("inf")
+    return kuota_or_existing / per_tps_factor
+
+
+def calc_max_tps_capacity(
+    db_row: Dict[str, Any],
+    eng_row: Dict[str, Any],
+    network_row: Dict[str, Any] | None,
+    existing_network: float,
+) -> Dict[str, Any]:
+    """Hitung Kapasitas Maksimum Transaksi (TPS) suatu produk — TPS tertinggi yang
+    masih bisa ditampung sebelum salah satu resource (CPU/Memory/Network) mencapai
+    100% dari kuota/kapasitas existing-nya. Storage tidak dihitung di sini karena
+    didorong oleh volume transaksi/hari, bukan TPS langsung.
+
+    db_row & eng_row: baris infra_utama (sistem DB & Engine) milik produk yang sama.
+    network_row: baris network produk (boleh None jika belum diisi).
+    """
+    rasio_cpu_total = float(db_row.get("rasio_cpu", 0) or 0) + float(eng_row.get("rasio_cpu", 0) or 0)
+    rasio_mem_total = float(db_row.get("rasio_mem", 0) or 0) + float(eng_row.get("rasio_mem", 0) or 0)
+    buffer_pct = float(db_row.get("buffer_pct", 0) or 0)
+    ha_multiplier = float(db_row.get("ha_multiplier", 1) or 1)
+    kuota_cpu = float(db_row.get("kuota_cpu", 0) or 0)
+    kuota_mem = float(db_row.get("kuota_mem", 0) or 0)
+
+    factor_cpu = rasio_cpu_total * (1 + buffer_pct / 100.0) * ha_multiplier
+    factor_mem = rasio_mem_total * (1 + buffer_pct / 100.0) * ha_multiplier
+
+    per_resource = {
+        "CPU": calc_max_tps_resource(kuota_cpu, factor_cpu),
+        "Memory": calc_max_tps_resource(kuota_mem, factor_mem),
+    }
+
+    if network_row:
+        kb_req = float(network_row.get("kb_req", 0) or 0)
+        kb_resp = float(network_row.get("kb_resp", 0) or 0)
+        overhead_pct = float(network_row.get("overhead_pct", 0) or 0)
+        net_buffer_pct = float(network_row.get("buffer_pct", 0) or 0)
+        net_ha = float(network_row.get("ha_multiplier", 1) or 1)
+        factor_net = (
+            (kb_req + kb_resp) * 8 * (1 + overhead_pct / 100.0) / 1000.0
+            * (1 + net_buffer_pct / 100.0) * net_ha
+        )
+        per_resource["Network"] = calc_max_tps_resource(float(existing_network or 0), factor_net)
+
+    bottleneck_resource = min(per_resource, key=per_resource.get)
+    max_tps = per_resource[bottleneck_resource]
+
+    return {
+        "per_resource": per_resource,
+        "bottleneck_resource": bottleneck_resource,
+        "max_tps": max_tps,
+    }
+
+
+# ---------------------------------------------------------------------------
+# FORECAST & SCENARIO (linear)
+# ---------------------------------------------------------------------------
+
+def calc_linear_scenario(
+    base_tps: float,
+    growth_pct_per_period: float,
+    n_periods: int,
+    db_row: Dict[str, Any],
+    eng_row: Dict[str, Any],
+    kuota_cpu: float,
+    kuota_mem: float,
+    network_row: Dict[str, Any] | None,
+    existing_network: float,
+    storage_row: Dict[str, Any] | None,
+    kuota_storage: float,
+) -> List[Dict[str, Any]]:
+    """Simulasi linear: TPS(n) = base_tps x (1 + growth% x n), n = 0..n_periods.
+    Volume transaksi storage diasumsikan naik proporsional dengan TPS.
+    Mengembalikan satu baris hasil per periode, lengkap dengan status traffic-light.
+    """
+    rasio_cpu_total = float(db_row.get("rasio_cpu", 0) or 0) + float(eng_row.get("rasio_cpu", 0) or 0)
+    rasio_mem_total = float(db_row.get("rasio_mem", 0) or 0) + float(eng_row.get("rasio_mem", 0) or 0)
+    buffer_pct = float(db_row.get("buffer_pct", 0) or 0)
+    ha_multiplier = float(db_row.get("ha_multiplier", 1) or 1)
+
+    vol_trx_base = float(storage_row.get("vol_trx_current", 0) or 0) if storage_row else 0.0
+    ukuran_kb = float(storage_row.get("ukuran_kb", 0) or 0) if storage_row else 0.0
+    retensi_hari = float(storage_row.get("retensi_hari", 0) or 0) if storage_row else 0.0
+    housekeeping_pct = float(storage_row.get("housekeeping_pct", 0) or 0) if storage_row else 0.0
+    sto_buffer_pct = float(storage_row.get("buffer_pct", 0) or 0) if storage_row else 0.0
+    replication_multiplier = float(storage_row.get("replication_multiplier", 1) or 1) if storage_row else 1.0
+
+    results = []
+    for n in range(0, n_periods + 1):
+        growth_factor = 1 + (growth_pct_per_period / 100.0) * n
+        tps_n = base_tps * growth_factor
+
+        final_cpu = tps_n * rasio_cpu_total * (1 + buffer_pct / 100.0) * ha_multiplier
+        final_mem = tps_n * rasio_mem_total * (1 + buffer_pct / 100.0) * ha_multiplier
+        util_cpu = safe_div(final_cpu, kuota_cpu) * 100
+        util_mem = safe_div(final_mem, kuota_mem) * 100
+
+        row = {
+            "periode": n,
+            "tps": tps_n,
+            "final_cpu": final_cpu,
+            "final_mem": final_mem,
+            "util_cpu_pct": util_cpu,
+            "util_mem_pct": util_mem,
+            "status_cpu": status_resource(util_cpu),
+            "status_mem": status_resource(util_mem),
+        }
+
+        if network_row:
+            kb_req = float(network_row.get("kb_req", 0) or 0)
+            kb_resp = float(network_row.get("kb_resp", 0) or 0)
+            overhead_pct = float(network_row.get("overhead_pct", 0) or 0)
+            net_buffer_pct = float(network_row.get("buffer_pct", 0) or 0)
+            net_ha = float(network_row.get("ha_multiplier", 1) or 1)
+            req_net = calc_network_required(tps_n, kb_req, kb_resp, overhead_pct)
+            final_net = req_net * (1 + net_buffer_pct / 100.0) * net_ha
+            util_net = safe_div(final_net, existing_network) * 100
+            row.update({
+                "final_network": final_net,
+                "util_network_pct": util_net,
+                "status_network": status_resource(util_net),
+            })
+
+        if storage_row:
+            vol_trx_n = vol_trx_base * growth_factor
+            storage_n = calc_storage_gb(vol_trx_n, ukuran_kb, retensi_hari, housekeeping_pct)
+            final_storage = storage_n * (1 + sto_buffer_pct / 100.0) * replication_multiplier
+            util_storage = safe_div(final_storage, kuota_storage) * 100
+            row.update({
+                "final_storage": final_storage,
+                "util_storage_pct": util_storage,
+                "status_storage": status_resource(util_storage),
+            })
+
+        results.append(row)
+
+    return results
+
+
+def find_breach_period(scenario_rows: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Cari periode pertama di mana salah satu resource melewati 100% kuota/kapasitas.
+    Return None jika sampai akhir periode tidak ada yang breach."""
+    resource_keys = [k for k in ("util_cpu_pct", "util_mem_pct", "util_network_pct", "util_storage_pct")]
+    for row in scenario_rows:
+        for key in resource_keys:
+            if key in row and row[key] > 100:
+                return {
+                    "periode": row["periode"],
+                    "tps": row["tps"],
+                    "resource": key.replace("util_", "").replace("_pct", "").upper(),
+                    "utilisasi_pct": row[key],
+                }
+    return None
+
+
 def aggregate_platform(
     platform_name: str,
     existing: Dict[str, float],
