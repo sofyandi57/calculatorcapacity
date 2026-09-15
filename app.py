@@ -361,6 +361,75 @@ def render_setting_page():
     except Exception as e:
         st.error(f"Gagal mengambil log aktivitas: {e}")
 
+    st.markdown('<div class="section-label">🗑️ Hapus Data</div>', unsafe_allow_html=True)
+
+    if not DATA["platforms"]:
+        st.info("Belum ada data untuk dihapus.")
+        return
+
+    scope = st.radio(
+        "Hapus berdasarkan",
+        ["Platform", "Produk", "Member (Link Network)"],
+        horizontal=True, key="del_scope",
+    )
+
+    if scope == "Platform":
+        plat_del = st.selectbox("Pilih Platform", platform_names(), key="del_plat_sel")
+        st.markdown(
+            f'<div class="warn-box">⚠️ Ini akan menghapus platform <b>{plat_del}</b> beserta '
+            f'SELURUH produk, infra, storage, network, riwayat bulanan, dan renewal yang terkait.</div>',
+            unsafe_allow_html=True,
+        )
+        confirm = st.checkbox(f"Saya yakin ingin menghapus platform '{plat_del}'.", key="del_plat_confirm")
+        if st.button("🗑️ Hapus Platform", type="primary", disabled=not confirm, key="del_plat_btn"):
+            delete_platform(plat_del)
+            persist(f"[Setting] Hapus platform '{plat_del}'")
+            st.success(f"Platform '{plat_del}' dihapus.")
+            st.rerun()
+
+    elif scope == "Produk":
+        plat_del = st.selectbox("Platform", platform_names(), key="del_prod_plat")
+        produks_del = produk_for_platform(plat_del)
+        if not produks_del:
+            st.info("Platform ini belum punya produk.")
+        else:
+            produk_del = st.selectbox("Produk", produks_del, key="del_prod_sel")
+            st.markdown(
+                f'<div class="warn-box">⚠️ Ini akan menghapus produk <b>{produk_del}</b> beserta '
+                f'infra, storage, network, riwayat bulanan yang terkait produk ini.</div>',
+                unsafe_allow_html=True,
+            )
+            confirm = st.checkbox(f"Saya yakin ingin menghapus produk '{produk_del}'.", key="del_prod_confirm")
+            if st.button("🗑️ Hapus Produk", type="primary", disabled=not confirm, key="del_prod_btn"):
+                delete_produk(plat_del, produk_del)
+                persist(f"[Setting] Hapus produk '{produk_del}' dari platform '{plat_del}'")
+                st.success(f"Produk '{produk_del}' dihapus.")
+                st.rerun()
+
+    else:  # Member (Link Network)
+        plat_del = st.selectbox("Platform", platform_names(), key="del_mem_plat")
+        produks_del = produk_for_platform(plat_del)
+        if not produks_del:
+            st.info("Platform ini belum punya produk.")
+        else:
+            produk_del = st.selectbox("Produk", produks_del, key="del_mem_prod")
+            members_del = [
+                m for m in DATA["network_members"]
+                if m.get("platform") == plat_del and m.get("produk") == produk_del
+            ]
+            if not members_del:
+                st.info("Produk ini belum punya member/link network.")
+            else:
+                labels_del = [m["nama_link"] for m in members_del]
+                pick_del = st.selectbox("Member/Link", labels_del, key="del_mem_sel")
+                confirm = st.checkbox(f"Saya yakin ingin menghapus member/link '{pick_del}'.", key="del_mem_confirm")
+                if st.button("🗑️ Hapus Member", type="primary", disabled=not confirm, key="del_mem_btn"):
+                    target = next(m for m in members_del if m["nama_link"] == pick_del)
+                    DATA["network_members"].remove(target)
+                    persist(f"[Setting] Hapus member/link '{pick_del}' dari produk '{produk_del}'")
+                    st.success(f"Member/link '{pick_del}' dihapus.")
+                    st.rerun()
+
 
 def fmt(n, dec=2):
     try:
