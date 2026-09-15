@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+local_data.db
+local_data.db-wal
+local_data.db-shm
+.streamlit/secrets.toml
