@@ -275,8 +275,8 @@ else:
 
 PAGE = st.sidebar.radio(
     "Navigasi",
-    ["⚙️ Setting", "📊 Capacity & Renewal", "👤 Login User", "📖 Penjelasan"],
-    index=1 if st.session_state["logged_in"] else 2,
+    ["⚙️ Setting", "📊 Capacity & Renewal", "🔔 Renewal", "👤 Login User", "📖 Penjelasan"],
+    index=1 if st.session_state["logged_in"] else 3,
     label_visibility="collapsed",
 )
 
@@ -671,6 +671,144 @@ if st.session_state["logged_in"] and DATA["platforms"]:
             st.caption(f"Gagal membuat PDF: {e}")
 
 
+RENEWAL_PROGRESS_OPTIONS = ["On Going", "Done", "Delay", "Cancelled"]
+RENEWAL_PROGRESS_COLOR = {
+    "On Going": "#2563eb", "Done": "#16a34a", "Delay": "#dc2626", "Cancelled": "#6b7280",
+}
+
+
+def _renewal_progress_badge(status: str) -> str:
+    color = RENEWAL_PROGRESS_COLOR.get(status, "#6b7280")
+    return f'<span class="badge" style="background:{color}">{status}</span>'
+
+
+def _renewal_date_badge(status: str) -> str:
+    color = calc.RENEWAL_STATUS_COLOR.get(status, "#6b7280")
+    return f'<span class="badge" style="background:{color}">{status}</span>'
+
+
+def render_renewal_page():
+    import datetime as _dt
+
+    st.title("🔔 Renewal")
+    st.caption("Kalender renewal/EOSL/End of Contract per platform, terpisah dari Capacity & Renewal.")
+
+    r_tab1, r_tab2 = st.tabs(["📝 Input Renewal", "📅 Kalender Renewal"])
+
+    with r_tab1:
+        st.markdown('<div class="section-label">Input Renewal</div>', unsafe_allow_html=True)
+        if not DATA["platforms"]:
+            st.info("Tambahkan platform terlebih dahulu di halaman Capacity & Renewal (tab Produk & Kapasitas).")
+        else:
+            with st.form("form_renewal", clear_on_submit=True):
+                c1, c2, c3 = st.columns(3)
+                r_platform = c1.selectbox("Platform", platform_names(), key="ren_platform")
+                r_item = c2.text_input("Item/Komponen", placeholder="Contoh: IBM P9 (Prod DC)")
+                r_vendor = c3.text_input("Vendor (opsional)", placeholder="Contoh: IBM")
+                c4, c5, c6 = st.columns(3)
+                r_jenis = c4.selectbox("Jenis Event", ["EOSL", "End of Support", "End of Contract",
+                                                        "Due Date Action Plan", "Lainnya"])
+                r_tanggal = c5.date_input("Tanggal Renewal/Due Date", value=_dt.date.today())
+                r_progress = c6.selectbox("Status Progress", RENEWAL_PROGRESS_OPTIONS)
+                r_catatan = st.text_input("Catatan (opsional)")
+                if st.form_submit_button("💾 Simpan Renewal", width='stretch', type="primary"):
+                    if not r_item.strip():
+                        st.error("Item/Komponen wajib diisi.")
+                    else:
+                        DATA["renewals"].append({
+                            "platform": r_platform, "item": r_item.strip(), "vendor": r_vendor.strip(),
+                            "jenis_event": r_jenis, "tanggal": r_tanggal.isoformat(),
+                            "status_progress": r_progress, "catatan": r_catatan.strip(),
+                        })
+                        st.success(f"Renewal '{r_item}' tersimpan.")
+                        persist(f"Tambah renewal '{r_item}' untuk platform '{r_platform}'")
+                        st.rerun()
+
+            if DATA["renewals"]:
+                st.markdown('<div class="section-label">Daftar Renewal Tersimpan</div>', unsafe_allow_html=True)
+                for orig_i, r in enumerate(DATA["renewals"]):
+                    with st.container(border=True):
+                        cc1, cc2, cc3, cc4 = st.columns([3, 3, 2, 1])
+                        cc1.markdown(f"**{r['item']}** ({r['platform']})")
+                        cc2.markdown(f"{r['jenis_event']} · {r['tanggal']}" + (f" · {r['vendor']}" if r.get("vendor") else ""))
+                        progress = r.get("status_progress", "On Going")
+                        new_progress = cc3.selectbox(
+                            "Progress", RENEWAL_PROGRESS_OPTIONS,
+                            index=RENEWAL_PROGRESS_OPTIONS.index(progress) if progress in RENEWAL_PROGRESS_OPTIONS else 0,
+                            key=f"ren_progress_{orig_i}", label_visibility="collapsed",
+                        )
+                        if new_progress != progress:
+                            DATA["renewals"][orig_i]["status_progress"] = new_progress
+                            persist(f"Ubah status progress renewal '{r['item']}' menjadi '{new_progress}'")
+                            st.rerun()
+                        if cc4.button("🗑️", key=f"del_renewal_{orig_i}"):
+                            item_name = r["item"]
+                            DATA["renewals"].pop(orig_i)
+                            persist(f"Hapus renewal '{item_name}'")
+                            st.rerun()
+                        if r.get("catatan"):
+                            st.caption(r["catatan"])
+
+    with r_tab2:
+        st.markdown('<div class="section-label">Kalender Renewal / Due Date per Platform</div>', unsafe_allow_html=True)
+        st.caption("Status dihitung otomatis terhadap tanggal hari ini. Gunakan filter untuk menyaring progress.")
+
+        if not DATA["renewals"]:
+            st.markdown('<div class="empty-box">Belum ada data renewal. Isi di tab Input Renewal.</div>', unsafe_allow_html=True)
+        else:
+            filter_progress = st.multiselect(
+                "Filter Status Progress", RENEWAL_PROGRESS_OPTIONS, default=RENEWAL_PROGRESS_OPTIONS,
+            )
+
+            computed_renewals = []
+            for orig_i, r in enumerate(DATA["renewals"]):
+                tgl = _dt.date.fromisoformat(r["tanggal"])
+                rs = calc.calc_renewal_status(tgl)
+                progress = r.get("status_progress", "On Going")
+                computed_renewals.append({**r, **rs, "status_progress": progress, "_orig_idx": orig_i})
+
+            filtered = [r for r in computed_renewals if r["status_progress"] in filter_progress]
+
+            if not filtered:
+                st.info("Tidak ada item renewal untuk filter status progress yang dipilih.")
+            else:
+                urgent = [r for r in filtered if r["status"] in ("SUDAH LEWAT", "MENDEKATI") and r["status_progress"] not in ("Done", "Cancelled")]
+                if urgent:
+                    st.markdown('<div class="section-label">Perlu Perhatian</div>', unsafe_allow_html=True)
+                    for r in sorted(urgent, key=lambda x: x["days_remaining"]):
+                        ket = (f"sudah lewat {abs(r['days_remaining'])} hari" if r["status"] == "SUDAH LEWAT"
+                               else f"{r['days_remaining']} hari lagi")
+                        st.markdown(
+                            f'<div class="warn-box">{_renewal_date_badge(r["status"])} {_renewal_progress_badge(r["status_progress"])} '
+                            f'<b>{r["item"]}</b> ({r["platform"]}{" · " + r["vendor"] if r.get("vendor") else ""}) — '
+                            f'{r["jenis_event"]} pada <b>{r["tanggal"]}</b> ({ket})</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.success("Tidak ada renewal aktif yang sudah lewat atau mendekati (≤90 hari).")
+
+                st.markdown('<div class="section-label">Semua Item (sesuai filter)</div>', unsafe_allow_html=True)
+                for plat in platform_names():
+                    items = [r for r in filtered if r["platform"] == plat]
+                    if not items:
+                        continue
+                    st.markdown(f"**{plat}**")
+                    for r in sorted(items, key=lambda x: x["days_remaining"]):
+                        with st.container(border=True):
+                            cc1, cc2 = st.columns([4, 3])
+                            cc1.markdown(f"**{r['item']}** — {r['jenis_event']}" + (f" · {r['vendor']}" if r.get("vendor") else ""))
+                            cc2.markdown(
+                                f"{_renewal_date_badge(r['status'])} {_renewal_progress_badge(r['status_progress'])} {r['tanggal']}",
+                                unsafe_allow_html=True,
+                            )
+                            if r.get("catatan"):
+                                st.caption(r["catatan"])
+
+                with st.expander("📋 Tabel Detail Renewal"):
+                    df_ren_show = pd.DataFrame(filtered).drop(columns=["_orig_idx"])
+                    st.dataframe(df_ren_show.round(0), width='stretch', hide_index=True)
+
+
 def render_penjelasan_page():
     st.title("📖 Penjelasan / Readme")
     st.caption("Dokumentasi cara kerja Kalkulator Kapasitas Infrastruktur — logika hitung, alur data, dan fungsi.")
@@ -849,6 +987,9 @@ aplikasi: Dashboard (dengan gauge chart), detail Infra/Storage/Network, Riwayat 
 if PAGE == "⚙️ Setting":
     render_setting_page()
     st.stop()
+elif PAGE == "🔔 Renewal":
+    render_renewal_page()
+    st.stop()
 elif PAGE == "👤 Login User":
     render_login_page()
     st.stop()
@@ -950,16 +1091,15 @@ else:
 st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
     "4️⃣  Forecast & Scenario",
     "5️⃣  Riwayat Bulanan (Grafik)",
     "6️⃣  Rekomendasi",
-    "7️⃣  Renewal",
-    "8️⃣  Export & Data",
-    "9️⃣  Ringkasan A-B-C",
+    "7️⃣  Export & Data",
+    "8️⃣  Ringkasan A-B-C",
 ])
 
 
@@ -1659,97 +1799,10 @@ with tab6:
 
 
 # ---------------------------------------------------------------------------
-# TAB 7 — RENEWAL
+# TAB 7 — EXPORT & DATA
 # ---------------------------------------------------------------------------
 
 with tab7:
-    st.markdown('<div class="section-label">Kalender Renewal / Due Date per Platform</div>', unsafe_allow_html=True)
-    st.caption("Catat item yang punya tanggal renewal/EOSL/End of Contract per platform. Status dihitung otomatis terhadap tanggal hari ini.")
-
-    if not DATA["platforms"]:
-        st.info("Tambahkan platform terlebih dahulu di tab 1 sebelum mencatat renewal.")
-    else:
-        import datetime as _dt
-
-        with st.form("form_renewal", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            r_platform = c1.selectbox("Platform", platform_names(), key="ren_platform")
-            r_item = c2.text_input("Item/Komponen", placeholder="Contoh: IBM P9 (Prod DC)")
-            r_vendor = c3.text_input("Vendor (opsional)", placeholder="Contoh: IBM")
-            c4, c5 = st.columns(2)
-            r_jenis = c4.selectbox("Jenis Event", ["EOSL", "End of Support", "End of Contract",
-                                                    "Due Date Action Plan", "Lainnya"])
-            r_tanggal = c5.date_input("Tanggal Renewal/Due Date", value=_dt.date.today())
-            r_catatan = st.text_input("Catatan (opsional)")
-            if st.form_submit_button("💾 Simpan Renewal", width='stretch', type="primary"):
-                if not r_item.strip():
-                    st.error("Item/Komponen wajib diisi.")
-                else:
-                    DATA["renewals"].append({
-                        "platform": r_platform, "item": r_item.strip(), "vendor": r_vendor.strip(),
-                        "jenis_event": r_jenis, "tanggal": r_tanggal.isoformat(), "catatan": r_catatan.strip(),
-                    })
-                    st.success(f"Renewal '{r_item}' tersimpan.")
-                    persist(f"Tambah renewal '{r_item}' untuk platform '{r_platform}'")
-                    st.rerun()
-
-        if not DATA["renewals"]:
-            st.markdown('<div class="empty-box">Belum ada data renewal. Isi form di atas.</div>', unsafe_allow_html=True)
-        else:
-            def renewal_badge(status: str) -> str:
-                color = calc.RENEWAL_STATUS_COLOR.get(status, "#6b7280")
-                return f'<span class="badge" style="background:{color}">{status}</span>'
-
-            computed_renewals = []
-            for orig_i, r in enumerate(DATA["renewals"]):
-                tgl = _dt.date.fromisoformat(r["tanggal"])
-                rs = calc.calc_renewal_status(tgl)
-                computed_renewals.append({**r, **rs, "_orig_idx": orig_i})
-
-            urgent = [r for r in computed_renewals if r["status"] in ("SUDAH LEWAT", "MENDEKATI")]
-            if urgent:
-                st.markdown('<div class="section-label">Perlu Perhatian</div>', unsafe_allow_html=True)
-                for r in sorted(urgent, key=lambda x: x["days_remaining"]):
-                    ket = (f"sudah lewat {abs(r['days_remaining'])} hari" if r["status"] == "SUDAH LEWAT"
-                           else f"{r['days_remaining']} hari lagi")
-                    st.markdown(
-                        f'<div class="warn-box">{renewal_badge(r["status"])} '
-                        f'<b>{r["item"]}</b> ({r["platform"]}{" · " + r["vendor"] if r.get("vendor") else ""}) — '
-                        f'{r["jenis_event"]} pada <b>{r["tanggal"]}</b> ({ket})</div>',
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.success("Tidak ada renewal yang sudah lewat atau mendekati (≤90 hari).")
-
-            st.markdown('<div class="section-label">Semua Item per Platform</div>', unsafe_allow_html=True)
-            for plat in platform_names():
-                items = [r for i, r in enumerate(computed_renewals) if r["platform"] == plat]
-                if not items:
-                    continue
-                st.markdown(f"**{plat}**")
-                for r in sorted(items, key=lambda x: x["days_remaining"]):
-                    with st.container(border=True):
-                        cc1, cc2, cc3 = st.columns([4, 3, 1])
-                        cc1.markdown(f"**{r['item']}** — {r['jenis_event']}" + (f" · {r['vendor']}" if r.get("vendor") else ""))
-                        cc2.markdown(f"{renewal_badge(r['status'])} {r['tanggal']}", unsafe_allow_html=True)
-                        if cc3.button("🗑️", key=f"del_renewal_{r['_orig_idx']}"):
-                            item_name = r["item"]
-                            DATA["renewals"].pop(r["_orig_idx"])
-                            persist(f"Hapus renewal '{item_name}'")
-                            st.rerun()
-                        if r.get("catatan"):
-                            st.caption(r["catatan"])
-
-            with st.expander("📋 Tabel Detail Renewal"):
-                df_ren_show = pd.DataFrame(computed_renewals).drop(columns=["_orig_idx"])
-                st.dataframe(df_ren_show.round(0), width='stretch', hide_index=True)
-
-
-# ---------------------------------------------------------------------------
-# TAB 8 — EXPORT & DATA
-# ---------------------------------------------------------------------------
-
-with tab8:
     st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
 
@@ -1792,7 +1845,7 @@ with tab8:
                 st.error(f"Gagal memuat file: {e}")
 
 
-with tab9:
+with tab8:
     st.markdown('<div class="section-label">Ringkasan A-B-C — Kebutuhan Infra vs Kapasitas Existing</div>',
                 unsafe_allow_html=True)
     if not RESULT["platform_breakdown"]:
