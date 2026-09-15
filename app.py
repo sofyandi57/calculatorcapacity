@@ -470,11 +470,12 @@ else:
 st.markdown("<hr style='margin:1.8rem 0;border-color:#e6e9ef;'>", unsafe_allow_html=True)
 
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "1️⃣  Produk & Kapasitas",
     "2️⃣  Infra (DB / Engine · CPU · Memori) & Storage",
     "3️⃣  Network",
-    "4️⃣  Export & Data",
+    "4️⃣  Forecast & Scenario",
+    "5️⃣  Export & Data",
 ])
 
 
@@ -805,10 +806,132 @@ with tab3:
 
 
 # ---------------------------------------------------------------------------
-# TAB 4 — EXPORT & DATA
+# TAB 4 — FORECAST & SCENARIO
 # ---------------------------------------------------------------------------
 
 with tab4:
+    all_pairs = [(plat, produk) for plat in platform_names() for produk in produk_for_platform(plat)]
+
+    if not all_pairs:
+        st.markdown('<div class="empty-box">Tambahkan Produk di tab 1 terlebih dahulu.</div>', unsafe_allow_html=True)
+    else:
+        labels = [f"{produk}  ·  {plat}" for plat, produk in all_pairs]
+        pick = st.selectbox("Pilih Produk", labels, key="forecast_pick")
+        idx = labels.index(pick)
+        plat_sel, produk_sel = all_pairs[idx]
+
+        infra_rows = get_infra_rows(plat_sel, produk_sel)
+        db_row = infra_rows.get("DB", {})
+        eng_row = infra_rows.get("Engine", {})
+        network_row = get_network_row(plat_sel, produk_sel)
+        storage_row = get_storage_row(plat_sel, produk_sel)
+        platform_obj = next((p for p in DATA["platforms"] if p["platform"] == plat_sel), {})
+        existing_network = float(platform_obj.get("network", 0) or 0)
+        kuota_cpu = float(db_row.get("kuota_cpu", 0) or 0)
+        kuota_mem = float(db_row.get("kuota_mem", 0) or 0)
+        kuota_storage = float(storage_row.get("kuota_storage", 0) or 0) if storage_row else 0.0
+        base_tps = float(db_row.get("future_tps", 0) or 0)
+
+        st.markdown('<div class="section-label">Kapasitas Maksimum Transaksi (TPS)</div>', unsafe_allow_html=True)
+        if not db_row or not eng_row:
+            st.markdown('<div class="empty-box">Isi dulu Infra Utama (tab 2) untuk produk ini.</div>', unsafe_allow_html=True)
+        else:
+            max_cap = calc.calc_max_tps_capacity(db_row, eng_row, network_row, existing_network)
+            with st.container(border=True):
+                cols = st.columns(len(max_cap["per_resource"]) + 1)
+                for col, (res_name, val) in zip(cols, max_cap["per_resource"].items()):
+                    is_bottleneck = res_name == max_cap["bottleneck_resource"]
+                    col.markdown(
+                        f"""
+                        <div class="metric-card" style="{'border-color:#dc2626;' if is_bottleneck else ''}">
+                            <div class="metric-title">Max TPS — {res_name}{' 🔻' if is_bottleneck else ''}</div>
+                            <div class="metric-value">{fmt(val, 0) if val != float('inf') else '∞'}</div>
+                            <div class="metric-sub">TPS</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with cols[-1]:
+                    st.markdown(
+                        f"""
+                        <div class="metric-card" style="border-color:#dc2626;background:#fef2f2;">
+                            <div class="metric-title">Kapasitas Maksimum</div>
+                            <div class="metric-value">{fmt(max_cap['max_tps'], 0) if max_cap['max_tps'] != float('inf') else '∞'} TPS</div>
+                            <div class="metric-sub">Bottleneck: {max_cap['bottleneck_resource']}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            st.markdown(
+                '<div class="note-box">💡 Kapasitas Maksimum adalah TPS tertinggi yang masih bisa ditampung '
+                'sebelum resource yang paling cepat penuh (bottleneck) mencapai 100% dari kuota/kapasitas '
+                'existing-nya. Storage tidak dihitung di sini karena didorong oleh volume transaksi/hari, bukan TPS langsung.</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown('<div class="section-label">Simulasi Forecast (Linear)</div>', unsafe_allow_html=True)
+        st.caption("TPS(periode) = TPS awal × (1 + % kenaikan × periode) — kenaikan linear terhadap TPS awal, bukan compounding.")
+
+        with st.container(border=True):
+            c1, c2, c3 = st.columns(3)
+            start_tps = c1.number_input("TPS Awal (default: Future TPS produk)", min_value=0.0, step=1.0,
+                                         value=base_tps, key="fc_start_tps")
+            growth_pct = c2.number_input("Kenaikan Transaksi per Periode (%)", min_value=0.0, step=1.0,
+                                          value=10.0, key="fc_growth")
+            n_periods = c3.number_input("Jumlah Periode (bulan/kuartal)", min_value=1, max_value=60, step=1,
+                                         value=12, key="fc_periods")
+            run_sim = st.button("▶️ Jalankan Simulasi", width='stretch', type="primary")
+
+        if run_sim or "fc_last_result" in st.session_state:
+            if run_sim:
+                scenario_rows = calc.calc_linear_scenario(
+                    start_tps, growth_pct, int(n_periods), db_row, eng_row,
+                    kuota_cpu, kuota_mem, network_row, existing_network,
+                    storage_row, kuota_storage,
+                )
+                st.session_state["fc_last_result"] = scenario_rows
+            else:
+                scenario_rows = st.session_state["fc_last_result"]
+
+            breach = calc.find_breach_period(scenario_rows)
+            if breach:
+                st.markdown(
+                    f'<div class="warn-box">⚠️ Pada periode ke-<b>{breach["periode"]}</b> '
+                    f'(TPS ≈ {fmt(breach["tps"],0)}), resource <b>{breach["resource"]}</b> diperkirakan '
+                    f'melewati 100% kapasitas ({fmt(breach["utilisasi_pct"])}%). Perlu penambahan kapasitas '
+                    f'sebelum periode tersebut.</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.success(f"Sampai periode ke-{int(n_periods)}, seluruh resource masih dalam batas kapasitas (≤100%).")
+
+            df_sc = pd.DataFrame(scenario_rows)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_sc["periode"], y=df_sc["util_cpu_pct"], name="CPU %", mode="lines+markers"))
+            fig.add_trace(go.Scatter(x=df_sc["periode"], y=df_sc["util_mem_pct"], name="Memory %", mode="lines+markers"))
+            if "util_network_pct" in df_sc:
+                fig.add_trace(go.Scatter(x=df_sc["periode"], y=df_sc["util_network_pct"], name="Network %", mode="lines+markers"))
+            if "util_storage_pct" in df_sc:
+                fig.add_trace(go.Scatter(x=df_sc["periode"], y=df_sc["util_storage_pct"], name="Storage %", mode="lines+markers"))
+            fig.add_hline(y=100, line_dash="dash", line_color="#dc2626", annotation_text="100% (Over Capacity)")
+            fig.add_hline(y=70, line_dash="dot", line_color="#f59e0b", annotation_text="70%")
+            fig.update_layout(
+                height=340, margin=dict(l=20, r=20, t=30, b=20),
+                xaxis_title="Periode", yaxis_title="Utilisasi (%)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, width='stretch')
+
+            with st.expander("📋 Tabel Detail Simulasi"):
+                st.dataframe(df_sc.round(2), width='stretch', hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 5 — EXPORT & DATA
+# ---------------------------------------------------------------------------
+
+with tab5:
     st.markdown('<div class="section-label">Export</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
 
