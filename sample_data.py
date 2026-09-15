@@ -38,6 +38,7 @@ def get_sample_state() -> dict:
                 "ha_multiplier": 2.0,
                 "kuota_cpu": 45.0,
                 "kuota_mem": 180.0,
+                "cluster_server": "Halmahera",
             },
             {
                 "platform": "Payment Switching",
@@ -53,6 +54,7 @@ def get_sample_state() -> dict:
                 "ha_multiplier": 2.0,
                 "kuota_cpu": 45.0,
                 "kuota_mem": 180.0,
+                "cluster_server": "Halmahera",
             },
         ],
         "storage": [
@@ -118,6 +120,7 @@ def get_sample_state() -> dict:
             {"platform": "Payment Switching", "produk": "Core Banking - Payment Switching",
              "bulan": "Agustus 2026", "tps_aktual": 1150.0, "vol_trx_aktual": 43_200_000.0},
         ],
+        "renewals": [],
     }
     return copy.deepcopy(state)
 
@@ -131,4 +134,5 @@ def get_empty_state() -> dict:
         "network_members": [],
         "pendukung": [],
         "monthly_history": [],
+        "renewals": [],
     }
